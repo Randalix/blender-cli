@@ -15,6 +15,7 @@ für Neon Getaway (Tunnel-Sichtbeton). Doku und Befunde im Wiki: `Software/Blend
 | Skript | Zweck |
 |---|---|
 | `formwork_wall.py` | Baut Plane 2,4 × 2,4 m + prozedurales Node-Material (Fugen, Ankerlöcher, Poren, Maserung, Krea-Wolken als Bild). Kachelbar per Konstruktion: 4D-Rauschen auf dem flachen Clifford-Torus, Raster aus `fract(UV)`. Höhe liegt auf der Emission. |
+| `bake_height16.py` | Höhe (Emission) als Float backen, als 16-bit-PNG speichern. 8 bit quantisiert glatte Plateaus zu Treppen → Konturlinien in der Normal. |
 | `normal_from_height.py` | Tangent-Normal (OpenGL, `--directx` optional) aus gebackener Höhe per Sobel mit Wrap. Grund: Bump-Node liefert beim Backen zu schwache Normals. |
 
 ## Ablauf (Beispiel T5)
@@ -22,6 +23,12 @@ für Neon Getaway (Tunnel-Sichtbeton). Doku und Befunde im Wiki: `Software/Blend
 blender-gpu -b --factory-startup -P textures/formwork_wall.py -- --cloud cloud.png --save t5.blend --cloud-amt 4 --bump-dist 1.5
 BLENDER_EXE=$HOME/bin/blender-gpu python3 ~/repos/blender-skills/skills/blender-core/scripts/run_in_blender.py --blend t5.blend \
     ~/repos/blender-skills/skills/blender-texture-baking/scripts/bake_maps.py -- --low T5_Wall \
-    --maps basecolor roughness normal emit --res 1024 --samples 16 --margin-px 0 --out //bake --name T5    # ~25 s mit OptiX
-blender-gpu -b --factory-startup -P textures/normal_from_height.py -- --height bake/T_T5_E.png --out bake/T_T5_N.png
+    --maps basecolor roughness --res 1024 --samples 16 --margin-px 0 --out //bake --name T5    # ~25 s mit OptiX
+blender-gpu -b t5.blend --factory-startup -P textures/bake_height16.py -- --obj T5_Wall --out bake/T_T5_H16.png
+blender-gpu -b --factory-startup -P textures/normal_from_height.py -- --height bake/T_T5_H16.png --out bake/T_T5_N.png --strength 120
 ```
+
+## Fallstricke (Shader-Nodes)
+- `Scale` eines Noise nie räumlich steuern (Phasenfehler → Marmor-Wirbel); stattdessen feste Skalen per Maske mischen.
+- Interne `Distortion` > ~0,3 erzeugt Wirbel; Domain Warping über externe Vektor-Offsets nutzen.
+- Diagnose: `formwork_wall.py … --dbg meso|stain|cloud|pores|…` legt eine Komponente auf die Emission, dann mit `bake_height16.py` backen.

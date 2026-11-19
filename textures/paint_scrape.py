@@ -1,6 +1,6 @@
 """T6b tunnel_paint_scrape: Schrammen an Lackmarkierungen, bei denen Farbe verschmiert und teilweise abgetragen ist
 (Joe 19.11.). Kachel 2,0 x 2,0 m = 1024 px, beidseitig nahtlos (passt zu T6).
-Schrammen sind analytisch je Band-Zelle (Hoehe ~10 cm): Zelle aktiv per Hash, Start x0, Laenge 20-80 cm, Dicke 2-8 cm,
+Schrammen sind analytisch je Band-Zelle (Hoehe ~10 cm): Zelle aktiv per Hash, Start x0, Laenge log-verteilt 5 cm - 1,6 m, Dicke 2-8 cm,
 Form wie ein Komet (scharfer Anfang, laeuft in Fahrtrichtung +x aus), Rand mit Rauschen ausgefranst.
 Masken (MASK_<name> fuer bake_masks.py):
   abrade   R  Teilabtrag in der Schramme: gestreift laengs (1 = Lack bis auf den Beton weg)
@@ -21,6 +21,7 @@ argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser()
 ap.add_argument("--save", required=True); ap.add_argument("--seed", type=float, default=23.0)
 ap.add_argument("--density", type=float, default=0.42, help="Anteil aktiver Band-Zellen")
+ap.add_argument("--len-min", type=float, default=0.05, help="kuerzeste Schramme (m)"); ap.add_argument("--len-max", type=float, default=1.6, help="laengste Schramme (m)")
 a = ap.parse_args(argv)
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -44,7 +45,9 @@ def scrape_layer(phase, w_off):
     val2, col2 = K.white(comb(cell, K.SEED, w_off + 0.5))
     q1, q2, q3 = K.split(col2)
     active = m("LESS_THAN", r1, a.density)
-    Lr = m("ADD", 0.10, m("MULTIPLY", m("POWER", r3, 1.5), 0.30))       # 0,10..0,40 uv = 20..80 cm
+    # Laenge log-verteilt (Joe 19.11.): L = Lmin * (Lmax/Lmin)^r -> viele kurze, wenige sehr lange; Kachel 2 m -> uv = m / 2
+    lmin, lmax = a.len_min / 2.0, a.len_max / 2.0
+    Lr = m("MULTIPLY", lmin, m("POWER", lmax / lmin, r3))
     dx = m("FRACT", m("SUBTRACT", u, r2))
     t = m("DIVIDE", dx, Lr)                                              # 0..1 entlang der Schramme
     inside = m("LESS_THAN", t, 1.0)

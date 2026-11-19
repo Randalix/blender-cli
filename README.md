@@ -16,6 +16,8 @@ für Neon Getaway (Tunnel-Sichtbeton). Doku und Befunde im Wiki: `Software/Blend
 |---|---|
 | `formwork_wall.py` | Baut Plane 2,4 × 2,4 m + prozedurales Node-Material (Fugen, Ankerlöcher, Poren, Maserung, Krea-Wolken als Bild). Kachelbar per Konstruktion: 4D-Rauschen auf dem flachen Clifford-Torus, Raster aus `fract(UV)`. Höhe liegt auf der Emission. |
 | `bake_height16.py` | Höhe (Emission) als Float backen, als 16-bit-PNG speichern. 8 bit quantisiert glatte Plateaus zu Treppen → Konturlinien in der Normal. |
+| `bake_masks.py` | Alle `MASK_<name>`-Nodes eines Materials (plus Höhe) in einem Lauf als 16-bit-PNG backen. |
+| `weather_pass.py` | Höhenbasierte Verwitterung (numpy/scipy, kachelbar): Erosion an Bruchkanten (Slope-Blur), Schmutz in Kavitäten, Schmutzfahnen und Nässe nach unten, Kantenabrieb; schreibt Albedo, Höhe, Rauheit, Normal und Masken. |
 | `normal_from_height.py` | Tangent-Normal (OpenGL, `--directx` optional) aus gebackener Höhe per Sobel mit Wrap. Grund: Bump-Node liefert beim Backen zu schwache Normals. |
 
 ## Ablauf (Beispiel T5)
@@ -32,3 +34,11 @@ blender-gpu -b --factory-startup -P textures/normal_from_height.py -- --height b
 - `Scale` eines Noise nie räumlich steuern (Phasenfehler → Marmor-Wirbel); stattdessen feste Skalen per Maske mischen.
 - Interne `Distortion` > ~0,3 erzeugt Wirbel; Domain Warping über externe Vektor-Offsets nutzen.
 - Diagnose: `formwork_wall.py … --dbg meso|stain|cloud|pores|…` legt eine Komponente auf die Emission, dann mit `bake_height16.py` backen.
+
+## Ablauf mit Verwitterung (v3)
+```
+blender-gpu -b --factory-startup -P textures/formwork_wall.py -- --cloud cloud.png --save t5.blend --wet-amt 0 --smudge-amt 0
+# Albedo sauber backen (bake_maps.py --maps basecolor), dann alle Masken + Höhe:
+blender-gpu -b t5.blend --factory-startup -P textures/bake_masks.py -- --obj T5_Wall --outdir bake/masks
+/mnt/caches/ComfyUI/venv/bin/python3 textures/weather_pass.py --albedo bake/T_T5_BC.png --masks bake/masks --out bake/weathered
+```

@@ -13,7 +13,7 @@ ap.add_argument("--cloud", required=True); ap.add_argument("--save", required=Tr
 ap.add_argument("--seed", type=float, default=7.0); ap.add_argument("--bump", type=float, default=1.0)
 ap.add_argument("--cloud-amt", type=float, default=4.0); ap.add_argument("--bump-dist", type=float, default=0.004); ap.add_argument("--grain-amt", type=float, default=0.03)
 ap.add_argument("--warp", type=float, default=0.12); ap.add_argument("--meso-amt", type=float, default=0.07)
-ap.add_argument("--grain-warp", type=float, default=0.04); ap.add_argument("--dbg", default="", help="Diagnose: einzelne Komponente auf die Emission legen (meso, stain, laitance, cloud, fine, pores, honey, crack, bleed, grain)"); ap.add_argument("--spall-amt", type=float, default=1.0); ap.add_argument("--spall-thr", type=float, default=0.66); ap.add_argument("--crack-amt", type=float, default=1.0); ap.add_argument("--smudge-amt", type=float, default=1.0); ap.add_argument("--wet-amt", type=float, default=1.0)
+ap.add_argument("--grain-warp", type=float, default=0.04); ap.add_argument("--dbg", default="", help="Diagnose: einzelne Komponente auf die Emission legen (meso, stain, laitance, cloud, fine, pores, honey, crack, bleed, grain)"); ap.add_argument("--spall-amt", type=float, default=1.0); ap.add_argument("--spall-thr", type=float, default=0.66); ap.add_argument("--spall-scale", type=float, default=3.2); ap.add_argument("--crack-amt", type=float, default=1.0); ap.add_argument("--smudge-amt", type=float, default=1.0); ap.add_argument("--wet-amt", type=float, default=1.0)
 ap.add_argument("--meso-dist", type=float, default=0.25); ap.add_argument("--meso-detail", type=float, default=3.0); ap.add_argument("--laitance-amt", type=float, default=0.035); ap.add_argument("--stain-amt", type=float, default=0.045)
 a = ap.parse_args(argv)
 
@@ -221,11 +221,11 @@ crackB = m("MULTIPLY", mr(m("DIVIDE", ce2, m("MULTIPLY", width, 0.6)), 0.0, 1.0,
 crack = m("MULTIPLY", m("MAXIMUM", crackA, m("MULTIPLY", m("MULTIPLY", crackB, crackA), 0.0)), a.crack_amt)  # feines Netz vorerst aus
 
 # ---------- Abplatzungen: unregelmaessige Ausbrueche mit scharfer Kante, an Stoessen gehaeuft ----------
-sp_raw, _ = noise_at(P2, 3.2, detail=6.0, rough=0.68, w_off=101.0)
+sp_raw, _ = noise_at(P2, a.spall_scale, detail=6.0, rough=0.68, w_off=101.0)
 sp_in = m("ADD", sp_raw, m("MULTIPLY", m("MULTIPLY", near_j, sstep(jn, 0.55, 0.75)), 0.12))
 spall = m("MULTIPLY", mr(sp_in, a.spall_thr, a.spall_thr + 0.012, 0.0, 1.0, "LINEAR"), a.spall_amt)      # Kante scharf
 spall_rim = m("MULTIPLY", m("MULTIPLY", mr(sp_in, a.spall_thr - 0.018, a.spall_thr, 0.0, 1.0), m("SUBTRACT", 1.0, mr(sp_in, a.spall_thr, a.spall_thr + 0.012, 0.0, 1.0))), a.spall_amt)
-ag_d, ag_c = voronoi_at(P2, 95.0, w_off=102.0)                                      # freiliegende Koernung
+ag_d, ag_c = voronoi_at(P2, 60.0, w_off=102.0)                                      # freiliegende Koernung
 agg = mr(ag_d, 0.0, 0.45, 1.0, 0.0, "LINEAR")
 agsep = node("ShaderNodeSeparateColor"); L.new(ag_c, agsep.inputs[0]); agg_tone = m("SUBTRACT", agsep.outputs[0], 0.5)
 sp_depth = mr(sp_raw, a.spall_thr, a.spall_thr + 0.12, 0.35, 1.0, "LINEAR")                              # zur Mitte tiefer
@@ -265,11 +265,11 @@ plug_tone = m("SUBTRACT", m("MULTIPLY", wsep.outputs[0], 0.5), 0.45)
 alb = m("ADD", 0.5, m("MULTIPLY", cloud, a.cloud_amt))
 for term, w in ((meso, a.meso_amt), (laitance, a.laitance_amt), (stain, -a.stain_amt), (grain, a.grain_amt), (fine, 0.04), (panel, 1.0),
                 (pores, -0.30), (honey, -0.10), (crack, -0.16), (groove, -0.16), (bleed, -0.05), (ring, -0.30), (halo, 0.02),
-                (smudge, -0.09), (wet, -0.09), (wet_rim, -0.04), (spall_rim, -0.05)):
+                (smudge, -0.09), (wet, -0.09), (wet_rim, -0.04), (spall_rim, -0.14)):
     alb = m("ADD", alb, m("MULTIPLY", term, w))
 alb = m("ADD", alb, m("MULTIPLY", plug_eff, m("MULTIPLY", plug_tone, 0.30)))
 alb = m("ADD", alb, m("MULTIPLY", m("MULTIPLY", plug, is_open), -0.25))
-sp_tone = m("ADD", m("ADD", 0.56, m("MULTIPLY", agg_tone, 0.16)), m("MULTIPLY", agg, -0.05))
+sp_tone = m("ADD", m("ADD", 0.64, m("MULTIPLY", agg_tone, 0.30)), m("MULTIPLY", m("SUBTRACT", 1.0, agg), -0.10))  # heller Bruch, Koernung kontrastreich
 mixs = node("ShaderNodeMix", data_type="FLOAT"); L.new(m("MULTIPLY", spall, 0.85), mixs.inputs[0]); L.new(alb, mixs.inputs[2]); L.new(sp_tone, mixs.inputs[3])
 alb = mixs.outputs[0]
 alb_lin = m("POWER", m("MAXIMUM", alb, 0.0), 2.2)
@@ -277,7 +277,7 @@ alb_lin = m("POWER", m("MAXIMUM", alb, 0.0), 2.2)
 # ---------- Height (0,5 = Flaeche): Plateau, Tiefen nur fuer Poren/Fugen/Risse/Nester ----------
 h = m("ADD", 0.5, m("MULTIPLY", pores, -0.25))
 for term, w in ((groove, -0.30), (ridge, 0.06), (hole, -0.28), (plug_eff, 0.15), (honey, -0.10), (crack, -0.14),
-                (m("MULTIPLY", spall, sp_depth), -0.22), (m("MULTIPLY", spall, agg), 0.05),
+                (m("MULTIPLY", spall, sp_depth), -0.40), (m("MULTIPLY", spall, agg), 0.10),
                 (grain, m("MULTIPLY", a.grain_amt, 0.04)), (fine, m("MULTIPLY", m("SUBTRACT", 1.0, laitance), 0.0012)), (meso, 0.003), (bleed, 0.004)):
     h = m("ADD", h, m("MULTIPLY", term, w))
 

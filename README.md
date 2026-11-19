@@ -18,6 +18,7 @@ für Neon Getaway (Tunnel-Sichtbeton). Doku und Befunde im Wiki: `Software/Blend
 | `bake_height16.py` | Höhe (Emission) als Float backen, als 16-bit-PNG speichern. 8 bit quantisiert glatte Plateaus zu Treppen → Konturlinien in der Normal. |
 | `nodekit.py` | Gemeinsame Node-Helfer (Clifford-Torus, noise_at, voronoi_at, warp, Masken-Nodes) für neue Builder. |
 | `paint_wear.py` | T6 Lack-Verwitterung (2 × 2 m): MASK_chip/scratch/fade/dirt + Lackhöhe. |
+| `paint_scrape.py` | T6b Schrammen mit verschmierter, teils abgetragener Farbe + Kantenrauschen für weiche Streifenkanten. |
 | `bake_masks.py` | Alle `MASK_<name>`-Nodes eines Materials (plus Höhe) in einem Lauf als 16-bit-PNG backen. |
 | `weather_pass.py` | Höhenbasierte Verwitterung (numpy/scipy, kachelbar): Erosion an Bruchkanten (Slope-Blur), Schmutz in Kavitäten, Schmutzfahnen und Nässe nach unten, Kantenabrieb; schreibt Albedo, Höhe, Rauheit, Normal und Masken. |
 | `normal_from_height.py` | Tangent-Normal (OpenGL, `--directx` optional) aus gebackener Höhe per Sobel mit Wrap. Grund: Bump-Node liefert beim Backen zu schwache Normals. |

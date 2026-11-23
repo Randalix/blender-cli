@@ -60,7 +60,7 @@ Inside scripts these are available without imports: `bpy`, `obj(name)`, `report(
 Requirements: Linux, the official Blender 5.2 archive from blender.org (it bundles Python), git. A GPU is optional and only used for Cycles.
 
 ```bash
-git clone https://github.com/<owner>/blender-tools && cd blender-tools
+git clone https://github.com/Randalix/blender-cli && cd blender-cli
 # optional machine config, read by bin/bl and tools/install.sh:
 mkdir -p ~/.config/bl && cat > ~/.config/bl/env <<'EOF'
 export BL_BLENDER_DIR=/opt/blender-5.2.4-linux-x64   # else `blender` on PATH

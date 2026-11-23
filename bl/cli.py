@@ -398,6 +398,31 @@ def cmd_save(a):
     out("✓ gespeichert {} ({:.1f} MB)".format(rel(r["path"]), r["bytes"] / 1e6))
 
 
+def cmd_qa(a):
+    _pdir, vdir = active()
+    r = call("result = bllib.qa({!r}, {!r}, {!r}, {!r}, {!r})".format(a.obj or None, a.profile, a.budget, a.eps, a.tol),
+             timeout=a.timeout)
+    mdir = vdir / "messung"
+    mdir.mkdir(parents=True, exist_ok=True)
+    f = core.next_numbered(mdir, "qa-" + a.profile, ".json")
+    f.write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
+    head = "{} qa {} · Profil {} · Tris {}{} · {} Fehler, {} Warnungen".format(
+        "✓" if r["pass"] else "✗", "bestanden" if r["pass"] else "nicht bestanden", r["profile"], r["tris"],
+        " / Budget {}".format(r["budget"]) if r.get("budget") else "", len(r["errors"]), len(r["warnings"]))
+    lines = [head]
+    lines += ["  FEHLER  " + e for e in core.clip_lines(r["errors"], a.lines)]
+    lines += ["  Warnung " + w for w in core.clip_lines(r["warnings"], a.lines)]
+    for n, o in list(r["objects"].items())[:20]:
+        lines.append("  {}  tris {}  Teile {}  {} mm".format(n, o["tris"], o.get("islands", "-"),
+                                                          "×".join("{:g}".format(x) for x in o["dims_mm"])))
+    if r.get("ground"):
+        lines.append("  ohne Bodenplatte: {} (mit --obj gezielt prüfen)".format(", ".join(r["ground"])))
+    lines.append("  Bericht {}".format(rel(f)))
+    if not r["pass"]:
+        raise Fail("\n".join(lines), 1)
+    out(*lines)
+
+
 # --------------------------------------------------------------------------- doctor
 
 def cmd_doctor(a):
@@ -506,6 +531,16 @@ def build_parser():
     p.add_argument("--engine", choices=["eevee", "cycles", "workbench"], help="nur --mode cam: Engine für dieses Bild")
     p.add_argument("--samples", type=int, help="nur --mode cam: Samples (EEVEE/Cycles) für dieses Bild")
     p.set_defaults(fn=cmd_look)
+    p = sp.add_parser("qa", help="Prüfung mit Zahlen (EL4CTEO asset-qa + kaputte Flächen + Polybudget); Exit 1 bei Fehlern")
+    p.add_argument("--obj", action="append", help="nur diese Objekte (Standard: alle sichtbaren Meshes ohne Bodenplatte)")
+    p.add_argument("--profile", default="game", choices=["game", "render", "print", "roblox"],
+                   help="game: UV/Maßstab/Normalen streng · render: nachsichtig · print: wasserdicht")
+    p.add_argument("--budget", type=int, metavar="TRIS", help="Polybudget (Tris gesamt)")
+    p.add_argument("--eps", type=float, metavar="M", help="z-fighting-Abstand in m (Standard 0,001)")
+    p.add_argument("--tol", type=float, metavar="M", help="Kontakttoleranz für schwebende Teile in m (Standard 0,002)")
+    p.add_argument("--lines", type=int, default=15)
+    p.add_argument("--timeout", type=float, default=600)
+    p.set_defaults(fn=cmd_qa)
     p = sp.add_parser("save", help="Szene in blend/ der aktiven Version speichern")
     p.add_argument("--as", help="Dateiname (ohne .blend)")
     p.set_defaults(fn=cmd_save)

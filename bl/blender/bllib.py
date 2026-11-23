@@ -766,6 +766,60 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             "compare": compare, "changes": changes, "ground": [o.name for o in ground], "empty": empty}
 
 
+# --------------------------------------------------------------------------- qa
+
+QA_DIR = os.environ.get("BL_QA_DIR", os.path.expanduser("~/repos/blender-skills/skills/blender-asset-qa/scripts"))
+
+
+def _qa_module():
+    """qa_check aus EL4CTEO blender-asset-qa (MIT) laden."""
+    import importlib
+    if not os.path.isfile(os.path.join(QA_DIR, "qa_check.py")):
+        raise RuntimeError("qa_check.py fehlt unter {} (BL_QA_DIR setzen)".format(QA_DIR))
+    if QA_DIR not in sys.path:
+        sys.path.insert(0, QA_DIR)
+    return importlib.import_module("qa_check")
+
+
+def qa(names=None, profile="game", budget=None, eps=None, tol=None):
+    """Prüft Meshes mit qa_check (z-fighting, schwebend, Normalen, offene/nm-Kanten, Duplikate, Maßstab, UV, Material)
+    plus eigene Prüfungen: kaputte Flächen (mesh_stats) und Polybudget (Tris gesamt).
+    names=None: alle sichtbaren Meshes ohne große Bodenplatten. → {"pass", "errors", "warnings", "objects", "ground", "tris"}"""
+    scene = bpy.context.scene
+    ground = []
+    if names:
+        objs = [obj(n) for n in names]
+    else:
+        objs = [o for o in scene.objects if o.type == "MESH" and o.visible_get()]
+        objs, ground = _split_ground(objs)
+    objs = [o for o in objs if o.type == "MESH"]
+    if not objs:
+        raise RuntimeError("keine Meshes zu prüfen")
+    kw = {"objects": [o.name for o in objs], "profile": profile}
+    if eps is not None:
+        kw["eps"] = eps
+    if tol is not None:
+        kw["tol"] = tol
+    r = _qa_module().run(**kw)
+    errors, warnings = list(r.get("errors", [])), list(r.get("warnings", []))
+    per = {}
+    total = 0
+    for o in objs:
+        st = mesh_stats(o)
+        q = (r.get("objects") or {}).get(o.name, {})
+        tris = q.get("tris", st.get("tris", 0))
+        total += tris
+        per[o.name] = {"tris": tris, "faces": st.get("f"), "islands": q.get("islands"),
+                       "dims_mm": [round(x * (scene.unit_settings.scale_length or 1.0) * 1000, 2) for x in o.dimensions]}
+        bad = ["{} {}".format(k, st[k]) for k in ("splitter", "winzig", "gefaltet") if st.get(k)]
+        if bad:
+            errors.append("{}: kaputte Flächen {}".format(o.name, ", ".join(bad)))
+    if budget and total > budget:
+        errors.append("Polybudget überschritten: {} Tris > {}".format(total, budget))
+    return {"pass": not errors, "profile": profile, "errors": errors, "warnings": warnings, "objects": per,
+            "ground": [o.name for o in ground], "tris": total, "budget": budget, "ground_z": r.get("ground_z")}
+
+
 # --------------------------------------------------------------------------- save
 
 def save(path):

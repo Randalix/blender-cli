@@ -136,6 +136,30 @@ o=$("$BL" open --leer); check "A7 open schaltet nach save um" grep -q "Szene lee
 sleep 0.5; check "A7 alter Worker beendet" bash -c "! kill -0 $pid1 2>/dev/null"
 "$BL" run -e 'bpy.ops.mesh.primitive_cube_add()' >/dev/null
 o=$("$BL" open --verwerfen); check "A7 open --verwerfen lädt gespeicherte Datei" grep -q "test-kiste.blend" <<<"$o"
+# --- Phase 2 B: bl qa findet eingebaute Fehler, sauberer Würfel besteht
+"$BL" run -e 'import bmesh
+m=bpy.data.materials.new("Q")
+def wuerfel(n, loc, size=1):
+    bpy.ops.mesh.primitive_cube_add(size=size, location=loc); o=bpy.context.object; o.name=n; o.data.materials.append(m); return o
+wuerfel("QSauber", (20,0,0.5))
+o=wuerfel("QLoch", (23,0,0.5)); bm=bmesh.new(); bm.from_mesh(o.data); bm.faces.ensure_lookup_table(); bmesh.ops.delete(bm, geom=[bm.faces[0]], context="FACES_ONLY"); bm.to_mesh(o.data); bm.free()
+o=wuerfel("QUmgedreht", (26,0,0.5)); bm=bmesh.new(); bm.from_mesh(o.data); bmesh.ops.reverse_faces(bm, faces=bm.faces[:]); bm.to_mesh(o.data); bm.free()
+wuerfel("QSchwebt", (20,0,3), 0.2)
+o=wuerfel("QSkaliert", (29,0,1)); o.scale=(2,2,2)
+me=bpy.data.meshes.new("QS"); bm=bmesh.new()
+v=[bm.verts.new(p) for p in [(0,0,0),(1,0,0),(1,1,1),(0,1,1),(0.5,-0.00001,0)]]
+bm.faces.new((v[0],v[1],v[2],v[3])); bm.faces.new((v[0],v[4],v[1])); bm.to_mesh(me); bm.free()
+s=bpy.data.objects.new("QSplitter",me); bpy.context.scene.collection.objects.link(s); s.location=(32,0,0); me.materials.append(m)' >/dev/null
+o=$("$BL" qa --obj QSauber --profile game 2>&1); rc=$?; check "B qa: sauberer Würfel besteht (Exit 0)" bash -c "[ $rc -eq 0 ]"; check "B qa: Kopfzeile bestanden" has "✓ qa bestanden · Profil game · Tris 12"
+check "B qa: Bericht in messung/" has "messung/[0-9]{3}_qa-game.json"
+o=$("$BL" qa --obj QLoch --profile print 2>&1); rc=$?; check "B qa: Loch → Exit 1" bash -c "[ $rc -eq 1 ]"; check "B qa: Loch erkannt" has "FEHLER  QLoch: 4 open boundary edges"
+o=$("$BL" qa --obj QUmgedreht --profile print 2>&1); check "B qa: umgedrehte Normalen" has "QUmgedreht: 1 closed parts with normals pointing inward"
+o=$("$BL" qa --obj QSauber --obj QSchwebt --profile render 2>&1); check "B qa: schwebendes Teil" has "floating/detached part in QSchwebt"
+o=$("$BL" qa --obj QSkaliert --profile game 2>&1); check "B qa: Skalierung nicht angewendet" has "FEHLER  QSkaliert: unapplied scale"
+o=$("$BL" qa --obj QSplitter --profile render 2>&1); check "B qa: Splitter (eigene Prüfung)" has "QSplitter: kaputte Flächen splitter 1"
+o=$("$BL" qa --obj QSauber --profile game --budget 10 2>&1); rc=$?; check "B qa: Polybudget" bash -c "[ $rc -eq 1 ]"; check "B qa: Polybudget Meldung" has "Polybudget überschritten: 12 Tris > 10"
+o=$("$BL" qa --obj Gibtsnicht 2>&1); rc=$?; check "B qa: unbekanntes Objekt → Exit 2" bash -c "[ $rc -eq 2 ]"
+"$BL" run -e 'for n in ("QSauber","QLoch","QUmgedreht","QSchwebt","QSkaliert","QSplitter"): bpy.data.objects.remove(obj(n))' >/dev/null
 o=$("$BL" ls); check "ls zeigt 2 Versionen" bash -c "[ \$(grep -c ' v00' <<<\"$o\") -eq 2 ]"
 o=$(BL_ROOT=relativ "$BL" ls 2>&1); check "relatives BL_ROOT abgelehnt" grep -q "absoluter Pfad" <<<"$o"
 o=$("$BL" doctor); check "doctor" grep -q "Blender 5.2" <<<"$o"; check "doctor: PIL ok" grep -q "PIL im Worker: ok" <<<"$o"

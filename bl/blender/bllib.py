@@ -337,9 +337,10 @@ def _append_ref(path, names, tmpdir, env=False):
 SECTION_VIEW = {"x": "left", "y": "front", "z": "top"}  # Blick von der weggeschnittenen Seite
 
 
-def _section_copies(scene, objs, section, mn, mx):
+def _section_copies(scene, objs, section, mn, mx, temps, ids):
     """Schnittkopien: jedes Mesh mit Exact-Boolean gegen einen Quader auf der Kameraseite der Ebene.
-    x=V / y=V: entfernt x<V / y<V (Blick von -x / -y); z=V: entfernt z>V (Blick von oben). → (kopien, temps, ids)"""
+    x=V / y=V: entfernt x<V / y<V (Blick von -x / -y); z=V: entfernt z>V (Blick von oben).
+    Neue Objekte landen sofort in temps, Mesh/Material in ids (Aufräumen auch bei Teilfehlern). → kopien"""
     ax, v_mm = section
     su = scene.unit_settings.scale_length or 1.0
     v = v_mm / 1000.0 / su
@@ -350,14 +351,17 @@ def _section_copies(scene, objs, section, mn, mx):
     center = Vector(c)
     center[i] = v + size / 2 if ax == "z" else v - size / 2
     me = bpy.data.meshes.new("_bl_schnitt")
+    ids.append(me)
     bm = bmesh.new()
     bmesh.ops.create_cube(bm, size=size)
     bm.to_mesh(me)
     bm.free()
     mat = bpy.data.materials.new("_bl_schnitt")
+    ids.append(mat)
     mat.diffuse_color = (0.85, 0.12, 0.1, 1)
     me.materials.append(mat)
     cutter = bpy.data.objects.new("_bl_schnitt", me)
+    temps.append(cutter)
     scene.collection.objects.link(cutter)
     cutter.location = center
     cutter.hide_render = True
@@ -367,6 +371,7 @@ def _section_copies(scene, objs, section, mn, mx):
         if o.type != "MESH":
             continue
         k = o.copy()
+        temps.append(k)
         k.name = "_bl_cut_" + o.name
         scene.collection.objects.link(k)
         m = k.modifiers.new("_bl_cut", "BOOLEAN")
@@ -374,7 +379,7 @@ def _section_copies(scene, objs, section, mn, mx):
         if hasattr(m, "material_mode"):
             m.material_mode = "TRANSFER"  # Schnittfläche bekommt das rote Material des Quaders
         copies.append(k)
-    return copies, [cutter] + copies, (me, mat)
+    return copies
 
 
 def _section_check(objs):
@@ -399,7 +404,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
              "film": r.film_transparent, "fp": r.filepath, "cam": scene.camera, "fmt": r.image_settings.file_format,
              "cmode": r.image_settings.color_mode,
              "light": sh.light, "ctype": sh.color_type, "cav": sh.show_cavity, "outl": sh.show_object_outline}
-    temps, colors, cut_ids, hidden, res = [], {}, None, [], []
+    temps, colors, cut_ids, hidden, res = [], {}, [], [], []
     if section:
         _section_check(objs)
     try:  # alles Temporäre ab hier wird im finally entfernt, auch bei Fehlern
@@ -408,8 +413,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
         scene.collection.objects.link(cam)
         temps.append(cam)
         if section:
-            objs, cut_temps, cut_ids = _section_copies(scene, objs, section, mn, mx)
-            temps += cut_temps
+            objs = _section_copies(scene, objs, section, mn, mx, temps, cut_ids)
             views = [SECTION_VIEW[section[0]]]
         hidden += _hide_others(scene, objs)
         r.engine = "BLENDER_WORKBENCH"
@@ -478,9 +482,8 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
             bpy.data.objects.remove(o, do_unlink=True)
             if data is not None:
                 bpy.data.cameras.remove(data)
-        if cut_ids:
-            bpy.data.meshes.remove(cut_ids[0])
-            bpy.data.materials.remove(cut_ids[1])
+        for i in cut_ids:
+            (bpy.data.meshes if isinstance(i, bpy.types.Mesh) else bpy.data.materials).remove(i)
         for o in hidden:
             o.hide_render = False
         r.engine, r.resolution_x, r.resolution_y = saved["engine"], saved["rx"], saved["ry"]
@@ -777,56 +780,81 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
 
 # --------------------------------------------------------------------------- qa
 
-QA_DIR = os.environ.get("BL_QA_DIR", os.path.expanduser("~/repos/blender-skills/skills/blender-asset-qa/scripts"))
-
-
-def _qa_module():
-    """qa_check aus EL4CTEO blender-asset-qa (MIT) laden."""
+def _qa_module(qa_dir):
+    """qa_check aus EL4CTEO blender-asset-qa (MIT) laden; das Verzeichnis kommt hinten in sys.path (für _bpyx)."""
     import importlib
-    if not os.path.isfile(os.path.join(QA_DIR, "qa_check.py")):
-        raise RuntimeError("qa_check.py fehlt unter {} (BL_QA_DIR setzen)".format(QA_DIR))
-    if QA_DIR not in sys.path:
-        sys.path.insert(0, QA_DIR)
+    if not os.path.isfile(os.path.join(qa_dir, "qa_check.py")):
+        raise RuntimeError("qa_check.py fehlt unter {}".format(qa_dir))
+    if qa_dir not in sys.path:
+        sys.path.append(qa_dir)
     return importlib.import_module("qa_check")
 
 
-def qa(names=None, profile="game", budget=None, eps=None, tol=None):
+# eigene Prüfungen → Schlüssel im qa_check-Profil (e = Fehler, w = Warnung, None = aus)
+_QA_OWN = {"winzig": "dg", "splitter": "dg", "gefaltet": "inc"}
+
+
+def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None):
     """Prüft Meshes mit qa_check (z-fighting, schwebend, Normalen, offene/nm-Kanten, Duplikate, Maßstab, UV, Material)
-    plus eigene Prüfungen: kaputte Flächen (mesh_stats) und Polybudget (Tris gesamt).
-    names=None: alle sichtbaren Meshes ohne große Bodenplatten. → {"pass", "errors", "warnings", "objects", "ground", "tris"}"""
+    plus eigene Prüfungen (kaputte Flächen, Schwere nach Profil) und Polybudget (Tris gesamt).
+    names: diese Objekte zusammen als ein Asset. None: jedes sichtbare Mesh einzeln (ohne große Bodenplatten),
+    sonst gelten getrennte Objekte als „schwebend“. Modus und aktives Objekt bleiben erhalten.
+    → {"pass", "errors", "warnings", "objects", "ground", "tris"}"""
     scene = bpy.context.scene
+    qc = _qa_module(qa_dir or os.path.expanduser("~/repos/blender-skills/skills/blender-asset-qa/scripts"))
+    sev = qc.PROFILES[profile]
     ground = []
     if names:
         objs = [obj(n) for n in names]
+        groups = [[o for o in objs if o.type == "MESH"]]
     else:
         objs = [o for o in scene.objects if o.type == "MESH" and o.visible_get()]
         objs, ground = _split_ground(objs)
-    objs = [o for o in objs if o.type == "MESH"]
-    if not objs:
+        groups = [[o] for o in objs]
+    groups = [g for g in groups if g]
+    if not groups:
         raise RuntimeError("keine Meshes zu prüfen")
-    kw = {"objects": [o.name for o in objs], "profile": profile}
+    kw = {"profile": profile}
     if eps is not None:
         kw["eps"] = eps
     if tol is not None:
         kw["tol"] = tol
-    r = _qa_module().run(**kw)
-    errors, warnings = list(r.get("errors", [])), list(r.get("warnings", []))
-    per = {}
-    total = 0
-    for o in objs:
-        st = mesh_stats(o)
-        q = (r.get("objects") or {}).get(o.name, {})
-        tris = q.get("tris", st.get("tris", 0))
-        total += tris
-        per[o.name] = {"tris": tris, "faces": st.get("f"), "islands": q.get("islands"),
-                       "dims_mm": [round(x * (scene.unit_settings.scale_length or 1.0) * 1000, 2) for x in o.dimensions]}
-        bad = ["{} {}".format(k, st[k]) for k in ("splitter", "winzig", "gefaltet") if st.get(k)]
-        if bad:
-            errors.append("{}: kaputte Flächen {}".format(o.name, ", ".join(bad)))
-    if budget and total > budget:
+    vl = bpy.context.view_layer
+    act = vl.objects.active
+    mode = act.mode if act is not None else "OBJECT"
+    errors, warnings, per, total, gz = [], [], {}, 0, []
+    try:
+        for g in groups:
+            r = qc.run(objects=[o.name for o in g], **kw)
+            errors += r.get("errors", [])
+            warnings += r.get("warnings", [])
+            if r.get("ground_z") is not None:
+                gz.append(r["ground_z"])
+            for o in g:
+                st = mesh_stats(o)
+                q = (r.get("objects") or {}).get(o.name, {})
+                tris = q.get("tris", st.get("tris", 0))
+                total += tris
+                per[o.name] = {"tris": tris, "faces": st.get("f"), "islands": q.get("islands"),
+                               "dims_mm": [round(x * (scene.unit_settings.scale_length or 1.0) * 1000, 2) for x in o.dimensions]}
+                for k, prof_key in _QA_OWN.items():
+                    if st.get(k):
+                        msg = "{}: kaputte Flächen {} {}".format(o.name, k, st[k])
+                        level = sev.get(prof_key)
+                        (errors if level == "e" else warnings if level == "w" else []).append(msg)
+    finally:  # qa_check schaltet in den Object-Modus: Modus und aktives Objekt zurück
+        if act is not None and act.name in vl.objects:
+            vl.objects.active = act
+            if act.mode != mode:
+                try:
+                    bpy.ops.object.mode_set(mode=mode)
+                except RuntimeError:
+                    pass
+    if budget is not None and total > budget:
         errors.append("Polybudget überschritten: {} Tris > {}".format(total, budget))
     return {"pass": not errors, "profile": profile, "errors": errors, "warnings": warnings, "objects": per,
-            "ground": [o.name for o in ground], "tris": total, "budget": budget, "ground_z": r.get("ground_z")}
+            "ground": [o.name for o in ground], "tris": total, "budget": budget,
+            "ground_z": min(gz) if gz else None, "einzeln": not names}
 
 
 # --------------------------------------------------------------------------- save

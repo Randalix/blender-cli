@@ -61,23 +61,27 @@ class CoreTest(unittest.TestCase):
     def test_journal_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
-            j1, n1 = core.journal_file(p, "Körper", "a = 1")
-            self.assertEqual((j1.name, n1), ("001_koerper.py", True))
+            lauf = lambda n: json.loads((p / n).read_text())  # noqa: E731
+            j1, n1, r1 = core.journal_file(p, "Körper", "a = 1")
+            self.assertEqual((j1.name, n1, r1), ("001_koerper.py", True, 1))
             self.assertEqual(j1.read_text(), "a = 1\n")
-            j2, n2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt, letzte Datei → wiederverwendet
-            self.assertEqual((j2, n2), (j1, False))
-            j3, n3 = core.journal_file(p, "henkel", "b = 2")
+            j2, n2, r2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt, letzte Datei → Zähler
+            self.assertEqual((j2, n2, r2), (j1, False, 2))
+            self.assertEqual(lauf("001_koerper.lauf.json"), {"args": {}, "runs": 2})
+            j3, n3, _ = core.journal_file(p, "henkel", "b = 2")
             self.assertEqual((j3.name, n3), ("002_henkel.py", True))
-            j4, n4 = core.journal_file(p, "Körper", "a = 1")  # koerper → henkel → koerper: drei Läufe im Journal
+            j4, n4, _ = core.journal_file(p, "Körper", "a = 1")  # koerper → henkel → koerper: eigener Eintrag
             self.assertEqual((j4.name, n4), ("003_koerper.py", True))
-            j5, n5 = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # andere Werte → neue Datei + args.json
+            j5, n5, _ = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # andere Werte → neue Datei
             self.assertEqual((j5.name, n5), ("004_koerper.py", True))
-            self.assertEqual(json.loads((p / "004_koerper.args.json").read_text()), {"n": 3})
-            j6, n6 = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # gleiche Werte → wiederverwendet
-            self.assertEqual((j6.name, n6), ("004_koerper.py", False))
-            j7, n7 = core.journal_file(p, "Körper", "a = 1")  # ohne Werte ≠ {"n": 3}
+            self.assertEqual(lauf("004_koerper.lauf.json"), {"args": {"n": 3}, "runs": 1})
+            j6, n6, r6 = core.journal_file(p, "Körper", "a = 1", {"n": 3})
+            self.assertEqual((j6.name, n6, r6), ("004_koerper.py", False, 2))
+            j7, n7, _ = core.journal_file(p, "Körper", "a = 1", {"n": True})  # true ≠ 1
             self.assertEqual((j7.name, n7), ("005_koerper.py", True))
-            self.assertFalse((p / "005_koerper.args.json").exists())
+            j8, n8, _ = core.journal_file(p, "Körper", "a = 1")  # ohne Werte ≠ {"n": true}
+            self.assertEqual((j8.name, n8), ("006_koerper.py", True))
+            self.assertFalse((p / "006_koerper.lauf.json").exists())
 
     def test_parse_set(self):
         self.assertEqual(core.parse_set(["n=3", "f=0.5", "l=[1,2]", "s=abc", "t=true", "leer="]),

@@ -86,11 +86,12 @@ def next_numbered(d: Path, stem: str, ext: str) -> Path:
 
 
 def journal_file(d: Path, stem: str, src: str, args: dict = None):
-    """Skript ins Journal d schreiben, --set-Werte als NNN_<stem>.args.json daneben.
-    Wiederverwendet wird nur die global letzte Journal-Datei, wenn Name, Inhalt und Werte gleich sind
-    (sonst fehlte beim Nachspielen ein Lauf). → (pfad, neu_geschrieben)"""
+    """Skript ins Journal d schreiben; --set-Werte und Laufzahl in NNN_<stem>.lauf.json daneben.
+    Ist die global letzte Journal-Datei gleich (Name, Inhalt, Werte), wird sie wiederverwendet und ihr Zähler `runs`
+    erhöht: keine identischen Kopien, und beim Nachspielen fehlt kein Lauf. → (pfad, neu_geschrieben, runs)"""
     src = src if src.endswith("\n") else src + "\n"
     args = args or {}
+    key = json.dumps(args, sort_keys=True)  # 1 und true sind hier verschieden
     st = clean_label(stem)
     last = None
     if d.is_dir():
@@ -100,15 +101,17 @@ def journal_file(d: Path, stem: str, src: str, args: dict = None):
             if f.name == "{:03d}_{}.py".format(n, st):
                 last = f
     if last is not None and last.read_text(encoding="utf-8") == src:
-        side = last.with_name(last.stem + ".args.json")
-        old = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
-        if old == args:
-            return last, False
+        side = last.with_name(last.stem + ".lauf.json")
+        meta = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {"args": {}, "runs": 1}
+        if json.dumps(meta.get("args", {}), sort_keys=True) == key:
+            meta["runs"] = int(meta.get("runs", 1)) + 1
+            side.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            return last, False, meta["runs"]
     j = next_numbered(d, stem, ".py")
     j.write_text(src, encoding="utf-8")
     if args:
-        j.with_name(j.stem + ".args.json").write_text(json.dumps(args, ensure_ascii=False), encoding="utf-8")
-    return j, True
+        j.with_name(j.stem + ".lauf.json").write_text(json.dumps({"args": args, "runs": 1}, ensure_ascii=False), encoding="utf-8")
+    return j, True, 1
 
 
 def parse_set(items) -> dict:

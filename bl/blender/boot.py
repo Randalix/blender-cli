@@ -14,6 +14,7 @@ ap.add_argument("--port", type=int, required=True)
 ap.add_argument("--idle", type=float, default=900.0)
 ap.add_argument("--repo", required=True)
 ap.add_argument("--empty", action="store_true", help="Default-Szene leeren (kein Würfel/Licht/Kamera)")
+ap.add_argument("--autosave", help="bei Leerlauf-Ende mit ungespeicherten Skriptläufen hierhin sichern")
 args = ap.parse_args(argv)
 
 sys.path[:0] = [os.path.join(args.repo, "vendor"), os.path.join(args.repo, "bl", "blender"), os.path.join(args.repo, ".deps")]
@@ -44,4 +45,10 @@ try:
             break
 finally:
     srv.stop()
+if reason.startswith("idle") and args.autosave and bllib.changed():
+    try:  # ungespeicherte Arbeit nicht still verwerfen; bl meldet die Datei beim nächsten Start
+        bpy.ops.wm.save_as_mainfile(filepath=args.autosave, copy=True, check_existing=False)
+        print("BL_AUTOSAVE {}".format(args.autosave), flush=True)
+    except Exception as ex:  # noqa: BLE001
+        print("BL_AUTOSAVE fehlgeschlagen: {}".format(ex), flush=True)
 print("BL_EXIT ({})".format(reason), flush=True)

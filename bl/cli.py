@@ -142,13 +142,23 @@ def blender_exe():
     return str(BLENDER_DIR / "blender")
 
 
+def _autosave_hint(sd):
+    """Leerlauf-Sicherung des letzten Workers einmal melden und mit Zeitstempel beiseitelegen."""
+    f = sd / "autosave.blend"
+    if f.is_file():
+        dst = sd / "autosave_{}.blend".format(time.strftime("%Y%m%d-%H%M%S", time.localtime(f.stat().st_mtime)))
+        f.rename(dst)
+        out("⚠ Der letzte Worker endete im Leerlauf mit ungespeicherten Änderungen; gesichert: {}  (`bl open {}`)".format(dst, dst))
+
+
 def start_worker(blend=None, quiet=False):
     sd = core.state_dir()
+    _autosave_hint(sd)
     port = _free_port()
     log = sd / "worker.log"
     cmd = [blender_exe(), "-b"] + ([str(blend)] if blend else []) + [
         "--factory-startup", "--python-exit-code", "1", "-P", str(REPO / "bl" / "blender" / "boot.py"), "--",
-        "--port", str(port), "--idle", str(IDLE), "--repo", str(REPO)] + ([] if blend else ["--empty"])
+        "--port", str(port), "--idle", str(IDLE), "--repo", str(REPO), "--autosave", str(sd / "autosave.blend")] + ([] if blend else ["--empty"])
     env = {k: v for k, v in os.environ.items() if k not in ("LD_LIBRARY_PATH", "DISPLAY", "PYTHONPATH", "PYTHONHOME")}
     t0 = time.time()
     with open(log, "w") as fh:
@@ -251,7 +261,7 @@ def cmd_open(a):
             why = "hat ungespeicherte Änderungen" if changed else "antwortet nicht eindeutig (rechnet noch oder alte bllib), Zustand unbekannt"
             raise Fail("✗ offene Szene {} (Worker pid {}, Szene {}): erst `bl save`, oder `bl open … --verwerfen`".format(
                 why, w["pid"], rel(w["blend"]) if w["blend"] else "leer"))
-        cmd_close(argparse.Namespace(save=False))
+        cmd_close(argparse.Namespace(save=False, verwerfen=True))
     start_worker(blend)
 
 
@@ -262,6 +272,11 @@ def cmd_close(a):
         return
     if a.save:
         cmd_save(argparse.Namespace(**{"as": None}))
+    elif not getattr(a, "verwerfen", False):
+        changed = worker_changed(w)
+        if changed is not False:
+            raise Fail("✗ {} (Worker pid {}): `bl close --save`, `bl save`, oder `bl close --verwerfen`".format(
+                "ungespeicherte Änderungen" if changed else "Zustand unbekannt (rechnet noch oder alte bllib)", w["pid"]))
     try:
         send(w["port"], "import bllib\nbllib._request_quit()\nresult = {}", 10)
     except Fail:
@@ -299,7 +314,7 @@ def cmd_run(a):
             jobs.append((f.read_text(encoding="utf-8"), a.name if (a.name and len(a.scripts) == 1) else f.stem))
     reported = []
     for i, (src, stem) in enumerate(jobs):
-        j, neu = core.journal_file(sk, stem, src, args)
+        j, neu, runs = core.journal_file(sk, stem, src, args)
         t0 = time.time()
         try:
             r = call("import json\nresult = bllib.run_file({!r}, json.loads({!r}))".format(str(j), json.dumps(args)),
@@ -309,7 +324,7 @@ def cmd_run(a):
                 ex.args = (str(ex) + "\n  Kette abgebrochen bei Skript {}/{}; nicht ausgeführt: {}".format(
                     i + 1, len(jobs), ", ".join(st for _s, st in jobs[i + 1:]) or "-"),)
             raise
-        out("✓ {}{} ({:.2f} s)".format(rel(j), "" if neu else " (unverändert, wiederverwendet)", time.time() - t0))
+        out("✓ {}{} ({:.2f} s)".format(rel(j), "" if neu else " (unverändert, Lauf {})".format(runs), time.time() - t0))
         if r.get("_stdout"):
             out(*core.clip_lines(("  | " + ln for ln in r["_stdout"].rstrip().splitlines()), a.lines))
         res = r.get("result") or {}
@@ -414,16 +429,29 @@ def cmd_save(a):
     out("✓ gespeichert {} ({:.1f} MB)".format(rel(r["path"]), r["bytes"] / 1e6))
 
 
+def _positive(typ):
+    def f(v):
+        x = typ(v)
+        if x <= 0:
+            raise argparse.ArgumentTypeError("muss > 0 sein, nicht {}".format(v))
+        return x
+    return f
+
+
 def cmd_qa(a):
     _pdir, vdir = active()
-    r = call("result = bllib.qa({!r}, {!r}, {!r}, {!r}, {!r})".format(a.obj or None, a.profile, a.budget, a.eps, a.tol),
-             timeout=a.timeout)
+    qdir = Path(os.environ.get("BL_QA_DIR", str(Path.home() / "repos/blender-skills/skills/blender-asset-qa/scripts")))
+    if not (qdir / "qa_check.py").is_file():
+        raise Fail("✗ qa_check.py fehlt unter {} (Repo blender-skills, oder BL_QA_DIR setzen)".format(qdir), 3)
+    r = call("result = bllib.qa({!r}, {!r}, {!r}, {!r}, {!r}, qa_dir={!r})".format(
+        a.obj or None, a.profile, a.budget, a.eps, a.tol, str(qdir)), timeout=a.timeout)
     mdir = vdir / "messung"
     mdir.mkdir(parents=True, exist_ok=True)
     f = core.next_numbered(mdir, "qa-" + a.profile, ".json")
     f.write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
-    head = "{} qa {} · Profil {} · Tris {}{} · {} Fehler, {} Warnungen".format(
-        "✓" if r["pass"] else "✗", "bestanden" if r["pass"] else "nicht bestanden", r["profile"], r["tris"],
+    head = "{} qa {} · Profil {}{} · Tris {}{} · {} Fehler, {} Warnungen".format(
+        "✓" if r["pass"] else "✗", "bestanden" if r["pass"] else "nicht bestanden", r["profile"],
+        " · je Objekt einzeln" if r.get("einzeln") else " · als ein Asset", r["tris"],
         " / Budget {}".format(r["budget"]) if r.get("budget") else "", len(r["errors"]), len(r["warnings"]))
     lines = [head]
     lines += ["  FEHLER  " + e for e in core.clip_lines(r["errors"], a.lines)]
@@ -514,6 +542,7 @@ def build_parser():
     p.set_defaults(fn=cmd_open)
     p = sp.add_parser("close", help="Worker beenden")
     p.add_argument("--save", action="store_true", help="vorher speichern")
+    p.add_argument("--verwerfen", action="store_true", help="auch mit ungespeicherten Änderungen beenden")
     p.set_defaults(fn=cmd_close)
     p = sp.add_parser("run", help="Skript(e) in der offenen Szene ausführen, nacheinander (wird nach skripte/ protokolliert)")
     p.add_argument("scripts", nargs="*", metavar="skript.py")
@@ -548,12 +577,12 @@ def build_parser():
     p.add_argument("--samples", type=int, help="nur --mode cam: Samples (EEVEE/Cycles) für dieses Bild")
     p.set_defaults(fn=cmd_look)
     p = sp.add_parser("qa", help="Prüfung mit Zahlen (EL4CTEO asset-qa + kaputte Flächen + Polybudget); Exit 1 bei Fehlern")
-    p.add_argument("--obj", action="append", help="nur diese Objekte (Standard: alle sichtbaren Meshes ohne Bodenplatte)")
+    p.add_argument("--obj", action="append", help="diese Objekte zusammen als ein Asset (Standard: jedes sichtbare Mesh einzeln, ohne Bodenplatte)")
     p.add_argument("--profile", default="game", choices=["game", "render", "print", "roblox"],
                    help="game: UV/Maßstab/Normalen streng · render: nachsichtig · print: wasserdicht")
-    p.add_argument("--budget", type=int, metavar="TRIS", help="Polybudget (Tris gesamt)")
-    p.add_argument("--eps", type=float, metavar="M", help="z-fighting-Abstand in m (Standard 0,001)")
-    p.add_argument("--tol", type=float, metavar="M", help="Kontakttoleranz für schwebende Teile in m (Standard 0,002)")
+    p.add_argument("--budget", type=_positive(int), metavar="TRIS", help="Polybudget (Tris gesamt)")
+    p.add_argument("--eps", type=_positive(float), metavar="M", help="z-fighting-Abstand in m (Standard 0,001)")
+    p.add_argument("--tol", type=_positive(float), metavar="M", help="Kontakttoleranz für schwebende Teile in m (Standard 0,002)")
     p.add_argument("--lines", type=int, default=15)
     p.add_argument("--timeout", type=float, default=600)
     p.set_defaults(fn=cmd_qa)

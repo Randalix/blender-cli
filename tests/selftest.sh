@@ -13,7 +13,7 @@ bad()  { echo "  FAIL $*"; fail=1; }
 check(){ local d="$1"; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
 has(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" || return 1; done; }  # alle Muster in $o
 hasnt(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" && return 1; done; return 0; }  # keins der Muster in $o
-cleanup(){ "$BL" close >/dev/null 2>&1; rm -rf "$BL_ROOT" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION"; }
+cleanup(){ "$BL" close --verwerfen >/dev/null 2>&1; BL_SESSION="$BL_SESSION-idle" "$BL" close --verwerfen >/dev/null 2>&1; rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION-idle"; rm -rf "$BL_ROOT" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION"; }
 trap cleanup EXIT
 
 echo "== bl selftest (BL_ROOT=$BL_ROOT)"
@@ -32,9 +32,10 @@ printf 'result = {"a": args.get("n", 0) * 2}\n' > "$BL_ROOT/ka.py"
 printf 'bpy.app.driver_namespace["bl_kb"] = args.get("name", "-"); result = {"b": args.get("name", "-")}\n' > "$BL_ROOT/kb.py"
 o=$("$BL" run "$BL_ROOT/ka.py" "$BL_ROOT/kb.py" --set n=21 --set name=Tasse)
 check "run Kette: beide Skripte, --set" has '"a": 42' '"b": "Tasse"'
-o=$("$BL" run "$BL_ROOT/kb.py" --set n=21 --set name=Tasse); check "Journal: letzte Datei, gleicher Inhalt und Werte → wiederverwendet" has "_kb.py \(unverändert"
-o=$("$BL" run "$BL_ROOT/ka.py" --set n=1); check "Journal: ka nach kb, andere Werte → neue Datei" hasnt "unverändert"
-check "Journal: zwei ka-Läufe, Werte daneben" bash -c "[ \$(command ls '$BL_ROOT'/test-kiste/v001_start/skripte/ | grep -c '_ka.py') -eq 2 ] && grep -q '\"n\": 1' '$BL_ROOT'/test-kiste/v001_start/skripte/*_ka.args.json"
+o=$("$BL" run "$BL_ROOT/kb.py" --set n=21 --set name=Tasse 2>&1); check "Journal: letzte Datei gleich → wiederverwendet, Lauf 2" has "_kb.py \(unverändert, Lauf 2\)"
+check "Journal: Laufzahl in kb.lauf.json" grep -q '"runs": 2' "$BL_ROOT"/test-kiste/v001_start/skripte/*_kb.lauf.json
+o=$("$BL" run "$BL_ROOT/ka.py" --set n=1 2>&1); rc=$?; check "Journal: ka nach kb, andere Werte → neue Datei" bash -c "[ $rc -eq 0 ]"; check "Journal: neue Datei gemeldet" hasnt "unverändert"
+check "Journal: zwei ka-Läufe, Werte daneben" bash -c "[ \$(command ls '$BL_ROOT'/test-kiste/v001_start/skripte/ | grep -c '_ka.py') -eq 2 ] && grep -q '\"n\": 1' '$BL_ROOT'/test-kiste/v001_start/skripte/*_ka.lauf.json"
 o=$("$BL" run "$BL_ROOT/ka.py" --set x=NaN 2>&1); check "--set NaN → klare Meldung" has "NaN/Infinity ist kein gültiger Wert"
 printf 'raise ValueError("kaputt")\n' > "$BL_ROOT/kf.py"
 printf 'bpy.app.driver_namespace["bl_kc"] = 1\n' > "$BL_ROOT/kc.py"
@@ -129,9 +130,11 @@ o=$("$BL" look --mode cam --compare last --size 200 --samples 4)
 check "A1 cam-compare: Lichtänderung sichtbar (alter Stand mit altem Licht)" has 'cam [1-9][0-9]*\.[0-9] %'; check "A1 keine Warnung" hasnt "kaum sichtbar"
 o=$("$BL" run -e 'result={"lights": sorted(o.name for o in bpy.context.scene.objects if o.type=="LIGHT"), "e": round(obj("Sonne").data.energy, 3), "scenes": len(bpy.data.scenes), "worlds": len(bpy.data.worlds), "welt_gesetzt": bpy.context.scene.world is not None and bpy.context.scene.world.library is None and not bpy.context.scene.world.name.endswith(".001")}')
 check "A1 cam-compare räumt auf (Licht, Welt, Szene)" has '"lights": \["Sonne"\], "e": 0.2, "scenes": 1, "worlds": 1, "welt_gesetzt": true'
-o=$("$BL" run -e 'result={"vorher": [bpy.context.scene.render.engine, bpy.context.scene.eevee.taa_render_samples]}'); vorher=$(grep -o '"vorher": \[[^]]*\]' <<<"$o")
+zust='s=bpy.context.scene; c=getattr(s,"cycles",None); result={"vorher": [s.render.engine, s.eevee.taa_render_samples, c.samples if c else None, c.device if c else None]}'
+o=$("$BL" run -e "$zust"); vorher=$(grep -o '"vorher": \[[^]]*\]' <<<"$o")
+check "C Zustand vorher gelesen" test -n "$vorher"
 o=$("$BL" look --mode cam --engine cycles --samples 2 --size 160); check "C --engine cycles rendert mit Cycles" has "Engine cycles \((OPTIX|CUDA|CPU)\)"
-o=$("$BL" run -e 'result={"vorher": [bpy.context.scene.render.engine, bpy.context.scene.eevee.taa_render_samples]}'); check "C Engine und Samples danach zurückgesetzt" grep -qF -- "$vorher" <<<"$o"
+o=$("$BL" run -e "$zust"); check "C Engine, Samples, Cycles-Samples/Gerät zurückgesetzt" grep -qF -- "$vorher" <<<"$o"
 o=$("$BL" look --engine cycles 2>&1); check "C --engine ohne cam → Fehler" grep -q "nur mit --mode cam" <<<"$o"
 # --- Phase 2 A7: bl open schaltet um, schützt ungespeicherte Änderungen
 pid1=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION/worker.json")
@@ -161,7 +164,7 @@ me=bpy.data.meshes.new("QS"); bm=bmesh.new()
 v=[bm.verts.new(p) for p in [(0,0,0),(1,0,0),(1,1,1),(0,1,1),(0.5,-0.00001,0)]]
 bm.faces.new((v[0],v[1],v[2],v[3])); bm.faces.new((v[0],v[4],v[1])); bm.to_mesh(me); bm.free()
 s=bpy.data.objects.new("QSplitter",me); bpy.context.scene.collection.objects.link(s); s.location=(32,0,0); me.materials.append(m)' >/dev/null
-o=$("$BL" qa --obj QSauber --profile game 2>&1); rc=$?; check "B qa: sauberer Würfel besteht (Exit 0)" bash -c "[ $rc -eq 0 ]"; check "B qa: Kopfzeile bestanden" has "✓ qa bestanden · Profil game · Tris 12"
+o=$("$BL" qa --obj QSauber --profile game 2>&1); rc=$?; check "B qa: sauberer Würfel besteht (Exit 0)" bash -c "[ $rc -eq 0 ]"; check "B qa: Kopfzeile bestanden" has "✓ qa bestanden · Profil game · als ein Asset · Tris 12"
 check "B qa: Bericht in messung/" has "messung/[0-9]{3}_qa-game.json"
 o=$("$BL" qa --obj QLoch --profile print 2>&1); rc=$?; check "B qa: Loch → Exit 1" bash -c "[ $rc -eq 1 ]"; check "B qa: Loch erkannt" has "FEHLER  QLoch: 4 open boundary edges"
 o=$("$BL" qa --obj QUmgedreht --profile print 2>&1); check "B qa: umgedrehte Normalen" has "QUmgedreht: 1 closed parts with normals pointing inward"
@@ -170,7 +173,32 @@ o=$("$BL" qa --obj QSkaliert --profile game 2>&1); check "B qa: Skalierung nicht
 o=$("$BL" qa --obj QSplitter --profile render 2>&1); check "B qa: Splitter (eigene Prüfung)" has "QSplitter: kaputte Flächen splitter 1"
 o=$("$BL" qa --obj QSauber --profile game --budget 10 2>&1); rc=$?; check "B qa: Polybudget" bash -c "[ $rc -eq 1 ]"; check "B qa: Polybudget Meldung" has "Polybudget überschritten: 12 Tris > 10"
 o=$("$BL" qa --obj Gibtsnicht 2>&1); rc=$?; check "B qa: unbekanntes Objekt → Exit 2" bash -c "[ $rc -eq 2 ]"
+o=$(BL_QA_DIR=/gibtsnicht "$BL" qa 2>&1); rc=$?; check "B qa: qa_check fehlt → Exit 3" bash -c "[ $rc -eq 3 ]"
+o=$("$BL" qa --budget 0 2>&1); rc=$?; check "B qa: --budget 0 abgelehnt" bash -c "[ $rc -eq 2 ]"
+"$BL" run -e 'bpy.context.view_layer.objects.active=obj("QSauber"); bpy.ops.object.mode_set(mode="EDIT")' >/dev/null
+o=$("$BL" qa --obj QSauber --profile game 2>&1); o=$("$BL" run -e 'result={"modus": bpy.context.object.mode, "aktiv": bpy.context.view_layer.objects.active.name}')
+check "B qa: Edit-Modus und aktives Objekt bleiben" has '"modus": "EDIT", "aktiv": "QSauber"'
+"$BL" run -e 'bpy.ops.object.mode_set(mode="OBJECT")' >/dev/null
 "$BL" run -e 'for n in ("QSauber","QLoch","QUmgedreht","QSchwebt","QSkaliert","QSplitter"): bpy.data.objects.remove(obj(n))' >/dev/null
+# --- Review 2: qa ohne --obj prüft jedes Objekt einzeln (getrennte Teile auf einem Boden sind kein Fehler)
+"$BL" open --leer --verwerfen >/dev/null
+"$BL" run -e 'm=bpy.data.materials.new("Q")
+for n, x in (("Tisch", 0), ("Stuhl", 3)):
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(x,0,0.5)); o=bpy.context.object; o.name=n; o.data.materials.append(m)
+bpy.ops.mesh.primitive_plane_add(size=50); bpy.context.object.name="Boden"' >/dev/null
+o=$("$BL" qa --profile game 2>&1); rc=$?; check "qa einzeln: Tisch und Stuhl getrennt bestehen" bash -c "[ $rc -eq 0 ]"; check "qa einzeln: Kopfzeile" has "je Objekt einzeln"; check "qa einzeln: kein floating" hasnt "floating"
+o=$("$BL" qa --obj Tisch --obj Stuhl --profile game 2>&1); check "qa als Asset: getrennte Teile → floating" has "floating"
+# --- Review 2: close schützt ungespeicherte Arbeit, Leerlauf sichert sie
+o=$("$BL" close 2>&1); rc=$?; check "close mit Änderungen → Abbruch" bash -c "[ $rc -eq 2 ]"; check "close: Meldung" has "close --verwerfen"
+"$BL" save >/dev/null
+(
+  export BL_SESSION="$BL_SESSION-idle" BL_IDLE=3
+  "$BL" projekt "Test Kiste" >/dev/null; "$BL" open --leer >/dev/null; "$BL" run -e 'bpy.ops.mesh.primitive_cube_add()' >/dev/null
+  sleep 7
+)
+check "Leerlauf: Sicherung geschrieben" test -s "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION-idle/autosave.blend"
+o=$(BL_SESSION="$BL_SESSION-idle" "$BL" open --leer 2>&1); check "Leerlauf: Hinweis beim nächsten Start" has "ungespeicherten Änderungen; gesichert: .*autosave_[0-9-]+\.blend"
+BL_SESSION="$BL_SESSION-idle" "$BL" close --verwerfen >/dev/null
 o=$("$BL" ls); check "ls zeigt 2 Versionen" bash -c "[ \$(grep -c ' v00' <<<\"$o\") -eq 2 ]"
 o=$(BL_ROOT=relativ "$BL" ls 2>&1); check "relatives BL_ROOT abgelehnt" grep -q "absoluter Pfad" <<<"$o"
 o=$("$BL" doctor); check "doctor" grep -q "Blender 5.2" <<<"$o"; check "doctor: PIL ok" grep -q "PIL im Worker: ok" <<<"$o"

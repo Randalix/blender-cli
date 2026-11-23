@@ -348,13 +348,18 @@ def cmd_run(a):
                 ex.args = (str(ex) + "\n  chain aborted at script {}/{}; not run: {}".format(
                     i + 1, len(jobs), ", ".join(st for _s, st in jobs[i + 1:]) or "-"),)
             raise
-        runs = core.journal_count(j, ok=True)
+        res = r.get("result") or {}
+        runs = core.journal_count(j, ok=True, result=res)
         out("✓ {}{} ({:.2f} s)".format(rel(j), "" if new else " (unchanged, run {})".format(runs), time.time() - t0))
         if r.get("_stdout"):
             out(*core.clip_lines(("  | " + ln for ln in r["_stdout"].rstrip().splitlines()), a.lines))
-        res = r.get("result") or {}
         if res:
-            out("  result " + core.clip_text(json.dumps(res, ensure_ascii=False), 400))
+            full = json.dumps(res, ensure_ascii=False)
+            if a.json or len(full) <= 400:
+                out("  result " + full)
+            else:
+                out("  result " + core.clip_text(full, 400), "  (full result: --json, or {})".format(
+                    rel(j.with_name(j.stem + ".run.json"))))
         if a.report:
             reps = r.get("reports") or []
             out(*(["  " + ln for ln in core.clip_lines(reps, 20)] if reps else ["  (nothing marked: report(obj) in the script)"]))
@@ -411,6 +416,10 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
     if r.get("engine"):
         out("  engine {}".format(r["engine"]))
+    if r.get("section_shift_mm"):
+        out("  section plane moved {:.3g} mm off a vertex row (exactly on it the cut faces get lost)".format(r["section_shift_mm"]))
+    for w in r.get("warnings") or []:
+        out("  " + w)
     if r.get("exposure"):
         out("  " + r["exposure_line"])
     if r.get("empty"):
@@ -633,6 +642,7 @@ def build_parser():
     p.add_argument("-e", metavar="CODE", help="code directly instead of a file")
     p.add_argument("--name", help="name in the script journal")
     p.add_argument("--report", action="store_true", help="measurements of the objects marked with report()")
+    p.add_argument("--json", action="store_true", help="print the full result (it is always stored in the journal's .run.json)")
     p.add_argument("--look", action="store_true", help="afterwards an iso image of the marked (else all) objects")
     p.add_argument("--size", type=int, default=768)
     p.add_argument("--timeout", type=float, default=600)

@@ -119,11 +119,14 @@ def journal_file(d: Path, stem: str, src: str, args: dict = None):
     return j, True
 
 
-def journal_count(j: Path, ok: bool = True) -> int:
-    """Count a run after execution: runs = successful, failed = failed. → runs"""
+def journal_count(j: Path, ok: bool = True, result=None) -> int:
+    """Count a run after execution: runs = successful, failed = failed. A successful run stores its full
+    result (the CLI shows it clipped). → runs"""
     meta = _run_meta(j) or {"args": {}, "runs": 0, "failed": 0}
     key = "runs" if ok else "failed"
     meta[key] = int(meta.get(key, 0)) + 1
+    if ok and result is not None:
+        meta["result"] = result
     j.with_name(j.stem + ".run.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     return int(meta.get("runs", 0))
 

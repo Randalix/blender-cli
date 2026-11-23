@@ -170,6 +170,19 @@ class TestDocs(unittest.TestCase):
                          ":type: mathutils.Matrix (default 'OBJECT')")
 
 
+class JournalResultTest(unittest.TestCase):
+    def test_result_stored_full(self):
+        with tempfile.TemporaryDirectory() as d:
+            j, _new = core.journal_file(Path(d), "m", "result = {}", {"n": 1})
+            big = {"xs": list(range(500))}
+            core.journal_count(j, ok=True, result=big)
+            core.journal_count(j, ok=False)  # a failed run keeps the last good result
+            meta = json.loads(j.with_name(j.stem + ".run.json").read_text())
+            self.assertEqual((meta["result"], meta["runs"], meta["failed"]), (big, 1, 1))
+            j2, new = core.journal_file(Path(d), "m", "result = {}", {"n": 1})
+            self.assertEqual((j2, new), (j, False))  # stored result does not break reuse
+
+
 class ExposureTest(unittest.TestCase):
     """bl/blender/exposure.py: numbers and verdict on synthetic images (needs Pillow, e.g. from .deps)."""
 

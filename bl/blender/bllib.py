@@ -401,6 +401,33 @@ def _section_copies(scene, objs, section, mn, mx, temps, ids):
     return copies
 
 
+def _section_nudge(scene, objs, section):
+    """A plane exactly through a vertex row makes the Exact boolean drop the cut faces (no red; A/B test, mug at y=0).
+    If vertices lie on the plane, move it by 1e-4 × the objects' size (≥ 0.001 mm), far below what an image shows.
+    → (section, shift in mm or 0)"""
+    ax, v_mm = section
+    su = scene.unit_settings.scale_length or 1.0
+    i = "xyz".index(ax)
+    meshes = [o for o in objs if o.type == "MESH"]
+    if not meshes:
+        return section, 0.0
+    mn, mx = bbox_world(meshes)
+    step_mm = max(1e-4 * (mx - mn).length * su * 1000, 0.001)
+    tol = step_mm / 2 / 1000 / su  # in scene units
+    v = v_mm / 1000 / su
+    dg = bpy.context.evaluated_depsgraph_get()
+    for o in meshes:
+        oe = o.evaluated_get(dg)
+        me = oe.to_mesh()
+        try:
+            mw = oe.matrix_world
+            if any(abs((mw @ vt.co)[i] - v) < tol for vt in me.vertices):
+                return (ax, v_mm + step_mm), step_mm
+        finally:
+            oe.to_mesh_clear()
+    return section, 0.0
+
+
 def _section_check(objs):
     if not any(o.type == "MESH" for o in objs):
         raise ValueError("--section cuts meshes only; selected: {}".format(", ".join(o.name for o in objs) or "-"))
@@ -843,12 +870,15 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         sec = (ax, float(v))
         if focus:
             raise ValueError("--section and --focus cannot be combined")
-    ref, new_ids, umg, eng, expo = [], [], None, None, None
+    ref, new_ids, umg, eng, expo, sec_shift, warns = [], [], None, None, None, 0.0, []
     try:
         if compare:
             ref, new_ids, umg = _append_ref(compare, names, os.path.dirname(out), env=(mode == "cam"))
             if not ref:
                 raise RuntimeError("comparison state {} contains no matching geometry objects".format(compare))
+            if mode == "cam" and umg is not None and not umg["lights"]:
+                warns.append("⚠ the comparison state has no lights: the change % shows mostly the lighting, not the model."
+                             " After setting lights: `bl save`, then `--compare last`")
         refp = {o.as_pointer() for o in ref}
         ground = []
         if names:
@@ -861,6 +891,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
                     ref, _g = _split_ground(ref)
         if not objs:
             raise RuntimeError("nothing to see: no visible geometry objects in the scene")
+        if sec:
+            sec, sec_shift = _section_nudge(scene, objs + ref, sec)
         if mode == "cam":
             cur = [("cam", _render_cam(out, panel, objs if compare else None, "now", engine, samples), None)]
             im0 = cur[0][1]
@@ -878,7 +910,9 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         if ground:
             names_txt += "  (without ground: {})".format(", ".join(o.name for o in ground))
         if sec:
-            names_txt += "  · section {}={:g} mm{}".format(sec[0], sec[1], " (red = cut face)" if mode == "solid" else "")
+            names_txt += "  · section {}={:g} mm{}{}".format(
+                sec[0], sec[1] - sec_shift, " (red = cut face)" if mode == "solid" else "",
+                " (moved {:.3g} mm off a vertex row)".format(sec_shift) if sec_shift else "")
         if mode == "cam":
             eng = engine or {"CYCLES": "cycles", "BLENDER_WORKBENCH": "workbench"}.get(scene.render.engine, "eevee")
             names_txt += "  · Engine {}{}{}".format(eng, " ({})".format(_cam_device) if eng == "cycles" else "",
@@ -926,6 +960,7 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
     legend = ["{} · mode {}{} · objects {} · faces {}".format(
         "/".join(v for v, _i, _m in cur), mode,
         " · 1 px = {} mm".format("/".join("{:.3g}".format(x) for x in mmpp)) if mmpp else "", len(objs), faces), names_txt]
+    legend += warns
     if expo:
         legend += [ln.strip() for ln in exposure.describe(expo).split("  ⚠")[:1]] + \
                   ["⚠" + w for w in exposure.describe(expo).split("  ⚠")[1:]]  # warning on its own line
@@ -947,7 +982,7 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
     return {"path": out, "w": final.width, "h": final.height, "mm_per_px": [round(x, 4) for x in mmpp],
             "views": [v for v, _i, _m in cur], "objects": len(objs), "faces": faces,
             "compare": compare, "changes": changes, "ground": [o.name for o in ground], "empty": empty,
-            "engine": (eng + (" ({})".format(_cam_device) if eng == "cycles" else "")) if mode == "cam" else None, "exposure": expo,
+            "engine": (eng + (" ({})".format(_cam_device) if eng == "cycles" else "")) if mode == "cam" else None, "exposure": expo, "section_shift_mm": sec_shift, "warnings": warns,
             "exposure_line": exposure.describe(expo) if expo else None}
 
 

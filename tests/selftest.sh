@@ -169,6 +169,25 @@ result={"q": round((e2/e1) / (r2["diag_mm"]/r1["diag_mm"])**2, 2), "rig": len(bp
 check "light studio: power ∝ diagonal²" has '"q": 1.0,'
 check "gray card material removed" has '"clay_left": false'
 check "light studio: repeated call replaces the rig" has '"rig": 3, "lights": 4'
+# --- wishes from the A/B test: full result, section on a vertex row, camera compare without lights
+o=$("$BL" run -e 'result={"xs": list(range(300))}' --name big); check "long result clipped, points to full result" has "full result: --json"
+check "full result stored in run.json" grep -q '298, 299\]' "$BL_ROOT"/test-box/*/scripts/*_big.run.json
+o=$("$BL" run -e 'result={"xs": list(range(300))}' --name big --json); check "--json prints the full result" has '298, 299\]\}'
+"$BL" run -e 'bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=0.4, depth=1, location=(3,0,0.5)); bpy.context.object.name="Cyl"' >/dev/null
+o=$("$BL" look --section y=0 --obj Cyl --size 300); check "section on a vertex row: plane moved and said so" has "moved [0-9.e-]+ mm off a vertex row"
+img=$(grep -o "/[^ ]*section-y0[^ ]*\.png" <<<"$o")
+o=$("$BL" run -e "from PIL import Image; px=list(Image.open('$img').convert('RGB').getdata()); result={'red': sum(1 for r,g,b in px if r-g>50 and r-b>50)}")
+check "section on a vertex row: cut face red" has '"red": [0-9]{3,}'
+o=$("$BL" look --section y=100 --obj Cyl --size 300); check "section off vertex rows: plane not moved" hasnt "off a vertex row"
+"$BL" run -e 'L=[o for o in bpy.context.scene.objects if o.type=="LIGHT"]; st=[o.hide_render for o in L]
+for o in L: o.hide_render=True
+bpy.ops.wm.save_as_mainfile(filepath=bpy.path.abspath("//") + "../nolight.blend" if bpy.data.filepath else "/tmp/x.blend", copy=True)
+for o, h in zip(L, st): o.hide_render=h
+result={"f": bpy.data.filepath}' >/dev/null
+nl=$(ls "$BL_ROOT"/test-box/*/nolight.blend 2>/dev/null | head -1)
+o=$("$BL" look --mode cam --compare "$nl" --size 160 --samples 2); check "cam compare against a state without lights: warning" has "comparison state has no lights"
+o=$("$BL" look --mode cam --compare last --size 160 --samples 2); check "cam compare with lights: no such warning" hasnt "has no lights"
+"$BL" run -e 'bpy.data.objects.remove(obj("Cyl"))' >/dev/null; rm -f "$nl"
 # --- bl open switches scenes, protects unsaved changes
 pid1=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION/worker.json")
 o=$("$BL" open --empty 2>&1); rc=$?; check "open with changes → abort" bash -c "[ $rc -eq 2 ]"; check "open: message names unsaved changes" has "unsaved changes"

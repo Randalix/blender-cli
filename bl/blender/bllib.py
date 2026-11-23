@@ -452,7 +452,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         rows = []
         for (v, im_new, _), (_v, im_old, _m) in zip(cur, old):
             pct, bbox = _diff(im_old, im_new)
-            changes.append({"view": v, "pct": round(pct, 2), "bbox": bbox})
+            pct = round(pct, 1)  # eine Rundung für Kachel, Legende und CLI
+            changes.append({"view": v, "pct": pct, "bbox": bbox})
             a = _tile(im_old, v + " · vorher", font, bg)
             b = _tile(im_new, "{} · jetzt · Änderung {:.1f} %".format(v, pct), font, bg)
             if bbox:

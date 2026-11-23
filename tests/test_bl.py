@@ -108,5 +108,67 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(core.image_tokens(768, 800), 819)
 
 
+class TestDocs(unittest.TestCase):
+    """bl docs: exakte Namen aus RST (ohne Blender, ohne echte Daten)."""
+
+    def setUp(self):
+        import docs
+        self.docs = docs
+        self.tmp = tempfile.TemporaryDirectory()
+        api = Path(self.tmp.name) / "api"
+        api.mkdir()
+        (api / "bpy.types.ID.rst").write_text(
+            "ID(bpy_struct)\n==============\n\n.. class:: ID(bpy_struct)\n\n   Base type\n\n"
+            "   .. attribute:: name\n\n      Unique data-block ID name (default \"\")\n\n      :type: str\n")
+        (api / "bpy.types.Object.rst").write_text(
+            "Object(ID)\n==========\n\nbase classes --- :class:`bpy_struct`, :class:`ID`\n\n"
+            ".. class:: Object(ID)\n\n   Object data-block\n\n"
+            "   .. attribute:: matrix_world\n\n      Worldspace transformation matrix\n\n      :type: :class:`mathutils.Matrix`\n\n"
+            "   .. data:: mode\n\n      Object interaction mode (default ``'OBJECT'``, readonly)\n\n      :type: str\n\n"
+            "   .. method:: select_set(state, *, view_layer=None)\n\n      Select or deselect the object.\n")
+        (api / "bmesh.ops.rst").write_text(
+            "BMesh Operators (bmesh.ops)\n===========================\n\n.. module:: bmesh.ops\n\n"
+            ".. function:: bevel(bm, geom, offset)\n\n   Bevel.\n\n.. function:: bisect_edges(bm, edges, cuts)\n\n   Split.\n")
+        self.api = api
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_attribut(self):
+        f, lines = self.docs.lookup("bpy.types.Object.matrix_world", self.api)
+        self.assertEqual(f.name, "bpy.types.Object.rst")
+        self.assertEqual(lines[0], ".. attribute:: matrix_world")
+        self.assertIn("Worldspace transformation matrix", lines)
+        self.assertNotIn("mode", " ".join(lines))  # nächstes Mitglied gehört nicht dazu
+
+    def test_ohne_praefix_und_methode(self):
+        _f, lines = self.docs.lookup("Object.select_set", self.api)
+        self.assertIn("select_set(state", lines[0])
+
+    def test_basisklasse(self):
+        f, lines = self.docs.lookup("bpy.types.Object.name", self.api)
+        self.assertEqual(f.name, "bpy.types.ID.rst")
+        self.assertIn(":type: str", lines)
+
+    def test_klasse_kurz(self):
+        _f, lines = self.docs.lookup("bpy.types.Object", self.api)
+        self.assertIn("Mitglieder (3): matrix_world, mode, select_set", lines)
+
+    def test_modul_funktion(self):
+        _f, lines = self.docs.lookup("bmesh.ops.bevel", self.api)
+        self.assertEqual(lines[0], ".. function:: bevel(bm, geom, offset)")
+        self.assertNotIn("Split.", lines)
+        _f, lines = self.docs.lookup("bmesh.ops", self.api)
+        self.assertIn("bevel, bisect_edges", lines[-1])
+
+    def test_unbekannt(self):
+        self.assertIsNone(self.docs.lookup("bpy.types.Object.gibtsnicht", self.api))
+        self.assertIsNone(self.docs.lookup("bevel", self.api))
+
+    def test_clean(self):
+        self.assertEqual(self.docs.clean(":type: :class:`mathutils.Matrix` (default ``'OBJECT'``)"),
+                         ":type: mathutils.Matrix (default 'OBJECT')")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -234,6 +234,14 @@ o=$(BL_SESSION="$BL_SESSION-idle" "$BL" info 2>&1); check "Leerlauf: Würfel aus
 BL_SESSION="$BL_SESSION-idle" "$BL" close --verwerfen >/dev/null
 o=$("$BL" ls); check "ls zeigt 2 Versionen" bash -c "[ \$(grep -c ' v00' <<<\"$o\") -eq 2 ]"
 o=$(BL_ROOT=relativ "$BL" ls 2>&1); check "relatives BL_ROOT abgelehnt" grep -q "absoluter Pfad" <<<"$o"
-o=$("$BL" doctor); check "doctor" grep -q "Blender 5.2" <<<"$o"; check "doctor: PIL ok" grep -q "PIL im Worker: ok" <<<"$o"
+# --- bl docs (echte Daten aus .docs, ohne Worker)
+o=$("$BL" docs bpy.types.Object.matrix_world 2>&1); check "docs: exakter Name" has "attribute:: matrix_world" "Worldspace transformation matrix" ":type: mathutils.Matrix"
+o=$("$BL" docs bmesh.ops.bevel 2>&1); check "docs: bmesh-Funktion mit Signatur" has "function:: bevel\\(bm"
+o=$("$BL" docs bpy.types.Mesh.name 2>&1); check "docs: Mitglied aus Basisklasse ID" has "bpy.types.ID.rst" "attribute:: name"
+o=$("$BL" docs bevel modifier --manual 2>&1); check "docs: Handbuch-Suche" has "manual/modeling/modifiers/generate/bevel.rst" "--hit i --manual"
+o=$("$BL" docs bevel modifier --manual --hit 0 2>&1); check "docs: Treffer vertiefen" has "^\\[0\\] manual/modeling/modifiers/generate/bevel.rst"
+o=$("$BL" docs xyzzyqq plugh 2>&1); rc=$?; check "docs: nichts gefunden → Exit 1" bash -c "[ $rc -eq 1 ]"
+o=$(BL_DOCS_DIR=/nonexistent "$BL" docs bevel 2>&1); rc=$?; check "docs: Daten fehlen → Exit 3 mit Hinweis" bash -c "[ $rc -eq 3 ]"
+o=$("$BL" doctor); check "doctor" grep -q "Blender 5.2" <<<"$o"; check "doctor: PIL ok" grep -q "PIL im Worker: ok" <<<"$o"; check "doctor: Doku ok" has "Doku \(bl docs\): ok \(api [0-9]+, manual [0-9]+ Dateien\)"
 [ $fail -eq 0 ] && echo "== selftest OK" || echo "== selftest FEHLGESCHLAGEN"
 exit $fail

@@ -491,6 +491,36 @@ def cmd_qa(a):
 
 # --------------------------------------------------------------------------- doctor
 
+def cmd_docs(a):
+    import docs
+    if not docs.available():
+        raise Fail("✗ Doku-Daten fehlen unter {} → bash tools/install.sh".format(docs.docs_dir()), 3)
+    q = " ".join(a.begriff).strip()
+    width = 220
+    if not a.manual and a.hit is None and len(a.begriff) == 1:
+        r = docs.lookup(q)
+        if r:
+            f, lines = r
+            out("{}  ({})".format(q, f.name))
+            out(*core.clip_lines((core.clip_text(docs.clean(ln), width) for ln in lines), a.zeilen))
+            return
+    scope = "manual" if a.manual else "api"
+    r = docs.search(q, scope, a.n, a.hit)
+    hits = r.get("hits") or []
+    if not hits:
+        raise Fail("✗ nichts gefunden in {} für {!r} (alle Wörter müssen vorkommen; weniger/andere Begriffe{})".format(
+            scope, q, "" if a.manual else ", oder --manual"), 1)
+    per = a.zeilen if a.hit is not None else max(3, a.zeilen // len(hits))
+    for h in hits:
+        i = h["index"] if a.hit is None else a.hit
+        out("[{}] {}{}".format(i, h["path"], " · " + h["breadcrumb"] if h.get("breadcrumb") else ""))
+        body = [ln for ln in h["text"].splitlines() if ln.strip()]
+        out(*("    " + ln for ln in core.clip_lines((core.clip_text(docs.clean(x), width) for x in body), per)))
+    if a.hit is None:
+        out("mehr zu Treffer i: bl docs {}{} --hit i{}".format(q if " " not in q else repr(q), " --manual" if a.manual else "",
+                                                       "  (gekürzt, weitere Treffer: -n)" if r.get("truncated") else ""))
+
+
 def cmd_doctor(a):
     ok = True
     out("Host {}  Sitzung {}  Repo {} ({})".format(socket.gethostname(), core.session_key(), REPO, _git_rev()))
@@ -519,6 +549,15 @@ def cmd_doctor(a):
     if not pil:
         ok = False
     out("PIL im Worker: {}".format("ok ({})".format(REPO / ".deps") if pil else "✗ fehlt → bash tools/install.sh"))
+    try:
+        import docs
+        dv = docs.available()
+    except Exception:  # noqa: BLE001
+        dv = {}
+    if not dv:
+        ok = False
+    out("Doku (bl docs): {}".format("ok (api {api}, manual {manual} Dateien)".format(**{"api": 0, "manual": 0, **dv}) if dv
+                                    else "✗ fehlt → bash tools/install.sh"))
     pdir, vdir = active(need=False)
     out("Projekt {}  Version {}".format(pdir.name if pdir else "-", vdir.name if vdir else "-"))
     ws = []
@@ -611,6 +650,14 @@ def build_parser():
     p = sp.add_parser("save", help="Szene in blend/ der aktiven Version speichern")
     p.add_argument("--as", help="Dateiname (ohne .blend)")
     p.set_defaults(fn=cmd_save)
+    p = sp.add_parser("docs", help="Blender-API/Handbuch offline: exakter Name (bpy.types.Object.matrix_world, "
+                                   "bmesh.ops.bevel) oder Suchbegriffe; ohne Worker")
+    p.add_argument("begriff", nargs="+")
+    p.add_argument("--manual", action="store_true", help="im Handbuch statt in der API suchen")
+    p.add_argument("-n", type=int, default=5, help="Anzahl Treffer der Suche (Standard 5)")
+    p.add_argument("--hit", type=int, metavar="I", help="Treffer I der Suche mit mehr Kontext")
+    p.add_argument("--zeilen", type=int, default=30, help="Ausgabe höchstens so viele Zeilen (Standard 30)")
+    p.set_defaults(fn=cmd_docs)
     p = sp.add_parser("doctor", help="Umgebung prüfen")
     p.set_defaults(fn=cmd_doctor)
     return ap

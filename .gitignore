@@ -4,3 +4,5 @@ bake*/
 *.png
 *.exr
 .deps/
+.docs/
+.docs.tmp/

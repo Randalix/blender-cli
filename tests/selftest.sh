@@ -36,11 +36,13 @@ img=$(grep -o '/[^ ]*\.png' <<<"$o"); check "Bild existiert" test -s "$img"
 o=$("$BL" look --mode wire --obj Kiste --size 400); check "look wire" grep -q "400×440 px" <<<"$o"
 o=$("$BL" run -e 'result={"objs": sorted(o.name for o in bpy.data.objects)}'); check "look räumt auf (keine _bl_-Objekte)" grep -q '"objs": \["Kiste"\]' <<<"$o"
 o=$("$BL" run -e 'bpy.ops.mesh.primitive_cube_add(size=0.2, location=(1.5,0,0.5)); bpy.context.object.name="Marke"
-v=bl.look(r"'"$BL_ROOT"'/top.png", views=["top"], panel=200)
-from PIL import Image; im=Image.open(v["path"]).convert("L"); w=im.width
-dark=[x for x in range(w) for y in range(0,200,4) if im.getpixel((x,y))<200]
-result={"marke_rechts": sum(dark)/len(dark) > w*0.5}
-bpy.data.objects.remove(obj("Marke"))'); check "top: +X liegt rechts" grep -q '"marke_rechts": true' <<<"$o"
+from PIL import Image
+def seite(v):
+    r=bl.look(r"'"$BL_ROOT"'/o_"+v+".png", views=[v], panel=200); im=Image.open(r["path"]).convert("L")
+    xs=[x for x in range(200) for y in range(0,200,4) if im.getpixel((x,y))<200]
+    return sum(xs)/len(xs) > 100
+result={"top_wie_front": seite("top")==seite("front"), "bottom_wie_front": seite("bottom")==seite("front")}
+bpy.data.objects.remove(obj("Marke"))'); check "top/bottom: +X auf derselben Seite wie front" grep -q '"top_wie_front": true, "bottom_wie_front": true' <<<"$o"
 o=$("$BL" save); check "save" grep -q "v001_start/blend/test-kiste.blend" <<<"$o"
 o=$("$BL" version "Zweiter Stand"); check "version speichert Szene mit" grep -q "v002_zweiter-stand/blend/test-kiste.blend" <<<"$o"
 o=$("$BL" close); check "close" grep -q "Worker beendet" <<<"$o"

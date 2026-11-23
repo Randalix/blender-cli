@@ -25,6 +25,7 @@ bl look --focus 38,0,64 --radius 12 [--compare]   # closeup around point x,y,z o
 bl look --view bottom             # underside: not part of the sheet
 bl look --section y=0 [--obj X] [--compare]   # cut at the plane (mm), cut faces red: wall thickness, interior
 bl look --mode cam --engine cycles --samples 64   # engine for this image only (eevee|cycles|workbench)
+bl light studio [--obj X] [--strength 0.7]   # key/fill/rim scaled to the object; other lights off for rendering, world dimmed
 bl docs bpy.types.Object.matrix_world   # API offline, matching 5.2: signature, description, type (incl. base classes)
 bl docs bmesh.ops.bevel  |  bl docs <terms> [--manual] [--hit I]   # full-text search in API or manual; no worker needed
 bl qa --profile game|render|print [--budget 5000]   # each mesh separately; --obj A --obj B = together as one asset; exit 1 on errors
@@ -42,8 +43,9 @@ Exit codes: 0 ok · 1 finding (`bl qa`) · 2 script error (one line `file:line: 
 3. **Numbers first** (`--report`, `bl info`, `bl qa`, `bl.hits`), **then one image** (`bl look --sheet`, ≈ 830 tokens). Inner details (wall thickness, does something poke inside?) with `bl look --section`.
 4. Before every change that should be visible: `bl version "<what changes>"`. Afterwards `bl look --compare` (fitting view; for details `--focus … --radius …`).
 5. If `bl run --report` or `bl info --obj` reports **ERROR broken faces**, fix the mesh first: wireframe and shading show artifacts there that say nothing about the design.
-6. Before finishing: `bl qa` with the fitting profile; every error is fixed or justified in the report.
-7. Acceptance: image (plus wireframe) to the user; the user decides.
+6. Before the first camera image: `bl light studio` (watts are not intuitive at object scale; guessed lights come out ≈ 4× too bright). `bl look --mode cam` prints exposure from a gray card (independent of the material color): follow a `⚠ overexposed`/`underexposed` warning with `--strength`, don't judge brightness by eye.
+7. Before finishing: `bl qa` with the fitting profile; every error is fixed or justified in the report.
+8. Acceptance: image (plus wireframe) to the user; the user decides.
 
 **Save tokens: every turn re-reads the whole context.** Fewer turns is the biggest lever:
 - Related steps in **one** shell call: `bl run … --report && bl look --compare …`, `bl save; bl version …; bl run …`, several `bl look` in a row.

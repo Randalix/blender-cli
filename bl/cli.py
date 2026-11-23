@@ -411,6 +411,8 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
     if r.get("engine"):
         out("  engine {}".format(r["engine"]))
+    if r.get("exposure"):
+        out("  " + r["exposure_line"])
     if r.get("empty"):
         out("  ⚠ EMPTY: nothing visible in {}. Closeup missed? --focus x,y,z is in mm.".format("/".join(r["empty"])))
     if r.get("ground"):
@@ -422,6 +424,20 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
         if mx < 1:
             out("  ⚠ barely visible change (< 1 % of the object area): does the change have any effect? Do not report it as a visible improvement.")
     return r
+
+
+def cmd_light(a):
+    r = call("result = bllib.light_studio({!r}, {!r}, {!r}, {!r})".format(a.obj or None, a.strength, a.keep_others, a.keep_world))
+    out("✓ studio light for objects around ({}) mm, diagonal {} mm{}".format(
+        ", ".join("{:g}".format(x) for x in r["center_mm"]), r["diag_mm"],
+        ", aimed from camera " + r["camera"] if r["camera"] else ", no scene camera: fixed iso direction"))
+    out(*("  " + ln for ln in r["lights"]))
+    if r["off"]:
+        out("  other lights off for rendering (hide_render): {}  (--keep-others keeps them)".format(", ".join(r["off"])))
+    if r["world"]:
+        out("  world {}: gray, strength 0.15{}".format(r["world"], "; yours ({}) stays in the file, --keep-world uses it".format(
+            r["kept_world"]) if r.get("kept_world") else ""))
+    out("  view transform {} · next: bl look --mode cam (prints exposure numbers)".format(r["view_transform"]))
 
 
 def cmd_look(a):
@@ -643,6 +659,14 @@ def build_parser():
     p.add_argument("--engine", choices=["eevee", "cycles", "workbench"], help="--mode cam only: engine for this image")
     p.add_argument("--samples", type=int, help="--mode cam only: samples (EEVEE/Cycles) for this image")
     p.set_defaults(fn=cmd_look)
+    p = sp.add_parser("light", help="lighting rig scaled to the objects (studio: key/fill/rim area lights)")
+    p.add_argument("rig", choices=["studio"])
+    p.add_argument("--obj", action="append", help="light these objects (default: visible geometry without ground)")
+    p.add_argument("--strength", type=_positive(float), default=1.0, help="multiply all light powers (default 1)")
+    p.add_argument("--keep-others", action="store_true", help="leave other lights on")
+    p.add_argument("--keep-world", action="store_true", help="leave the world as it is")
+    p.set_defaults(fn=cmd_light)
+
     p = sp.add_parser("qa", help="check with numbers (EL4CTEO asset-qa + broken faces + poly budget); exit 1 on errors")
     p.add_argument("--obj", action="append", help="these objects together as one asset (default: each visible mesh separately, without ground plane)")
     p.add_argument("--profile", default="game", choices=["game", "render", "print", "roblox"],

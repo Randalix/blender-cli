@@ -155,6 +155,20 @@ check "engine: state read before" test -n "$before"
 o=$("$BL" look --mode cam --engine cycles --samples 2 --size 160); check "--engine cycles renders with Cycles" has "engine cycles \((OPTIX|CUDA|CPU)\)"
 o=$("$BL" run -e "$state"); check "engine, samples, Cycles samples/device restored" grep -qF -- "$before" <<<"$o"
 o=$("$BL" look --engine cycles 2>&1); check "--engine without cam → error" grep -q "only with --mode cam" <<<"$o"
+# --- studio light scaled to the object, exposure numbers
+o=$("$BL" light studio); check "light studio: key, fill, rim" has "bl_key .* W" "bl_fill" "bl_rim"
+check "light studio: other light off for rendering" has "other lights off .*Sun"
+check "light studio: previous world kept in the file" has "yours \(.+\) stays in the file"
+o=$("$BL" look --mode cam --size 200 --samples 4); check "cam image: exposure line with gray card" has "exposure: object mean [0-9]+ %.*gray card [0-9]+ %"
+check "studio light: no exposure warning" hasnt "overexposed|underexposed"
+o=$("$BL" light studio --strength 8 >/dev/null; "$BL" look --mode cam --size 200 --samples 4); check "8× light → overexposed" has "⚠ overexposed"
+o=$("$BL" run -e 'k=lambda: bpy.data.collections["bl_light"].objects["bl_key"].data.energy
+r1=bl.light_studio(["Box"]); e1=k(); b=obj("Box"); sc=tuple(b.scale); b.scale=[x*0.01 for x in sc]; bpy.context.view_layer.update()
+r2=bl.light_studio(["Box"]); e2=k(); b.scale=sc; bpy.context.view_layer.update(); bl.light_studio(["Box"])
+result={"q": round((e2/e1) / (r2["diag_mm"]/r1["diag_mm"])**2, 2), "rig": len(bpy.data.collections["bl_light"].objects), "lights": len(bpy.data.lights), "clay_left": "_bl_clay" in bpy.data.materials}')
+check "light studio: power ∝ diagonal²" has '"q": 1.0,'
+check "gray card material removed" has '"clay_left": false'
+check "light studio: repeated call replaces the rig" has '"rig": 3, "lights": 4'
 # --- bl open switches scenes, protects unsaved changes
 pid1=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION/worker.json")
 o=$("$BL" open --empty 2>&1); rc=$?; check "open with changes → abort" bash -c "[ $rc -eq 2 ]"; check "open: message names unsaved changes" has "unsaved changes"

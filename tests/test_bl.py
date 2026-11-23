@@ -170,5 +170,58 @@ class TestDocs(unittest.TestCase):
                          ":type: mathutils.Matrix (default 'OBJECT')")
 
 
+class ExposureTest(unittest.TestCase):
+    """bl/blender/exposure.py: numbers and verdict on synthetic images (needs Pillow, e.g. from .deps)."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parent.parent
+        sys.path[:0] = [str(root / "bl" / "blender"), str(root / ".deps")]
+        try:
+            from PIL import Image
+        except ImportError:
+            raise unittest.SkipTest("Pillow missing (bash tools/install.sh)")
+        import exposure
+        cls.Image, cls.ex = Image, exposure
+
+    def img(self, v, size=(40, 20)):
+        return self.Image.new("RGB", size, (v, v, v))
+
+    def test_verdicts(self):
+        self.assertEqual(self.ex.stats(self.img(255))["verdict"], "over")
+        self.assertEqual(self.ex.stats(self.img(10))["verdict"], "under")
+        s = self.ex.stats(self.img(128))
+        self.assertEqual((s["verdict"], s["mean"], s["clipped"]), ("ok", 50.2, 0.0))
+
+    def test_clipped_share(self):
+        im = self.img(128)
+        im.paste((255, 40, 40), (0, 0, 4, 20))  # 10 % of the pixels with one channel at 255
+        s = self.ex.stats(im)
+        self.assertEqual(s["clipped"], 10.0)
+        self.assertEqual(s["verdict"], "over")
+
+    def test_box_and_mask(self):
+        im = self.img(250)
+        im.paste((100, 100, 100), (10, 5, 30, 15))
+        s = self.ex.stats(im, (10, 5, 30, 15))
+        self.assertEqual((s["verdict"], s["region"]), ("ok", "box"))
+        self.assertEqual(self.ex.stats(im, (39, 0, 60, 1))["region"], "image")  # degenerate box → whole image
+        mask = self.Image.new("L", (20, 10), 0)  # half size: resized to the image
+        mask.paste(255, (5, 3, 15, 7))
+        s = self.ex.stats(im, None, mask)
+        self.assertEqual((s["region"], s["mean"]), ("mask", 39.2))
+
+    def test_gray_card_decides(self):
+        white = self.img(230)  # a white object correctly lit is bright: the gray card says ok
+        self.assertEqual(self.ex.stats(white, clay=self.img(190, (20, 10)))["verdict"], "ok")
+        self.assertEqual(self.ex.stats(self.img(60), clay=self.img(235))["verdict"], "over")
+        self.assertEqual(self.ex.stats(white, clay=self.img(120))["verdict"], "under")
+
+    def test_describe(self):
+        self.assertIn("⚠ overexposed", self.ex.describe(self.ex.stats(self.img(255))))
+        self.assertNotIn("⚠", self.ex.describe(self.ex.stats(self.img(128))))
+        self.assertIn("gray card 75 %", self.ex.describe(self.ex.stats(self.img(128), clay=self.img(191))))
+
+
 if __name__ == "__main__":
     unittest.main()

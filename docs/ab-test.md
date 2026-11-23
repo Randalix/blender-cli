@@ -51,4 +51,4 @@ All three mugs meet the dimensions within about 0.2 mm and look comparable. None
 
 - One run per variant; agent runs vary.
 - B used the MCP as shipped, without a workflow skill comparable to ours. The comparison is "this CLI + skill" against "the MCP out of the box", not CLI against MCP under otherwise equal conditions.
-- All three agents rendered the first camera image overexposed. They chose key lights of 40–60 W at about 0.5 m for a 10 cm object, then reduced them by about 4×. This is the next thing `bl` should handle.
+- All three agents rendered the first camera image overexposed. They chose key lights of 40–60 W at about 0.5 m for a 10 cm object, then reduced them by about 4×. `bl` now handles this: `bl light studio` scales the lights to the object, and `bl look --mode cam` warns about overexposure (the corrected lights measure 68–76 % on the gray card, the first renders' lights 84–91 %).

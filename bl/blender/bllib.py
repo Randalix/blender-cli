@@ -17,6 +17,8 @@ import bpy
 from mathutils import Matrix, Vector
 from mathutils.kdtree import KDTree
 
+import exposure
+
 _quit = False
 _reports = []
 _cam_device = None  # device of the last Cycles render (legend)
@@ -550,7 +552,140 @@ def _cycles_gpu(scene):
     return "CPU"
 
 
-def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
+def _cam_mask(scene, objs, w, h):
+    """Silhouette of objs from the scene camera (fast Workbench render, flat, transparent film) → PIL 'L' mask w×h, or None."""
+    from PIL import Image
+    if not objs or scene.camera is None:
+        return None
+    r, sh = scene.render, scene.display.shading
+    saved = (r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, r.image_settings.file_format,
+             r.image_settings.color_mode, r.film_transparent, sh.light, sh.color_type)
+    hidden = _hide_others(scene, objs)
+    p = os.path.join(bpy.app.tempdir or "/tmp", "bl_mask_{}.png".format(os.getpid()))
+    try:
+        _set_engine(r, "workbench")
+        r.resolution_x, r.resolution_y, r.resolution_percentage = max(1, w // 2), max(1, h // 2), 100
+        r.image_settings.file_format, r.image_settings.color_mode = "PNG", "RGBA"
+        r.film_transparent, r.filepath = True, p
+        sh.light, sh.color_type = "FLAT", "SINGLE"
+        bpy.ops.render.render(write_still=True)
+        m = Image.open(p).getchannel("A").resize((w, h)).point(lambda v: 255 if v >= 128 else 0)
+        os.remove(p)
+        return m
+    except Exception:  # mask is a refinement; without it the box is used
+        return None
+    finally:
+        for o in hidden:
+            o.hide_render = False
+        (r.engine, r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, r.image_settings.file_format,
+         r.image_settings.color_mode, r.film_transparent, sh.light, sh.color_type) = saved
+
+
+def _cam_box(scene, objs, w, h):
+    """Pixel box (x0, y0, x1, y1) of the objects' bounding box seen from the scene camera, or None."""
+    from bpy_extras.object_utils import world_to_camera_view
+    if not objs or scene.camera is None:
+        return None
+    dg = bpy.context.evaluated_depsgraph_get()
+    xs, ys = [], []
+    for o in objs:
+        oe = o.evaluated_get(dg)
+        for c in oe.bound_box:
+            p = world_to_camera_view(scene, scene.camera, oe.matrix_world @ Vector(c))
+            if p.z > 0:
+                xs.append(p.x)
+                ys.append(p.y)
+    if not xs:
+        return None
+    x0, x1 = max(0.0, min(xs)), min(1.0, max(xs))
+    y0, y1 = max(0.0, min(ys)), min(1.0, max(ys))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0 * w, (1 - y1) * h, x1 * w, (1 - y0) * h)
+
+
+# Key light power per squared distance (W/m²). Calibrated on the A/B-test mug so that the first camera
+# render is neither over- nor underexposed with AgX; see tests/selftest.sh "light studio".
+STUDIO_K = 32.0
+STUDIO_RIG = (("bl_key", 1.0, 1.0, (1.0, 1.3, 0.9)),     # name, power factor, size factor, (to-camera, side, up)
+              ("bl_fill", 0.25, 1.5, (1.0, -1.0, 0.2)),
+              ("bl_rim", 0.6, 0.8, (-1.0, 0.3, 1.0)))
+
+
+def light_studio(names=None, strength=1.0, keep_others=False, keep_world=False):
+    """Three-point area-light rig scaled to the objects: distance 3 × diagonal, power ∝ distance², so the
+    irradiance on the object is the same for a 1 cm ring and a 10 m house. Replaces an earlier bl rig."""
+    global _changed
+    scene = bpy.context.scene
+    if names:
+        objs = [obj(n) for n in names]
+    else:
+        objs, _g = _split_ground([o for o in scene.objects if o.type in GEOM_TYPES and o.visible_get()])
+    if not objs:
+        raise RuntimeError("no visible geometry objects to light")
+    mn, mx = bbox_world(objs)
+    c, diag = (mn + mx) / 2, max((mx - mn).length, 1e-4)
+    up = Vector((0, 0, 1))
+    if scene.camera is not None:
+        to_cam = scene.camera.matrix_world.translation - c
+    else:
+        to_cam = Vector((1, -1, 0.8))
+    to_cam.z = 0
+    if to_cam.length < 1e-9:
+        to_cam = Vector((0, -1, 0))
+    to_cam.normalize()
+    side = up.cross(to_cam).normalized()  # horizontal, perpendicular to the view
+    coll = bpy.data.collections.get("bl_light")
+    if coll is None:
+        coll = bpy.data.collections.new("bl_light")
+    if scene.collection.children.get(coll.name) is None:
+        scene.collection.children.link(coll)
+    for o in list(coll.objects):
+        d = o.data
+        bpy.data.objects.remove(o)
+        if d is not None and d.users == 0:
+            bpy.data.lights.remove(d)
+    dist = 3.0 * diag
+    p_key = STUDIO_K * dist * dist * strength
+    lines = []
+    for name, pf, sf, (a, b, u) in STUDIO_RIG:
+        d = (to_cam * a + side * b + up * u).normalized()
+        L = bpy.data.lights.new(name, "AREA")
+        L.energy, L.size = p_key * pf, diag * sf
+        o = bpy.data.objects.new(name, L)
+        coll.objects.link(o)
+        o.location = c + d * dist
+        o.rotation_euler = (c - o.location).to_track_quat("-Z", "Y").to_euler()
+        lines.append("{} {:.3g} W, size {:.3g} m, distance {:.3g} m".format(name, L.energy, L.size, dist))
+    off = []
+    if not keep_others:
+        rig = {o.as_pointer() for o in coll.objects}
+        for o in scene.objects:
+            if o.type == "LIGHT" and o.as_pointer() not in rig and not o.hide_render:
+                o.hide_render = True
+                off.append(o.name)
+    world = kept_world = None
+    if not keep_world:
+        old_w = scene.world
+        if old_w is not None and old_w.name != "bl_studio_world":
+            old_w.use_fake_user = True  # otherwise it has no users and is dropped on save
+            kept_world = old_w.name
+        w = bpy.data.worlds.get("bl_studio_world") or bpy.data.worlds.new("bl_studio_world")
+        w.use_nodes = True
+        bgn = next((n for n in w.node_tree.nodes if n.type == "BACKGROUND"), None)
+        if bgn is None:
+            bgn = w.node_tree.nodes.new("ShaderNodeBackground")
+        bgn.inputs["Color"].default_value = (0.8, 0.8, 0.8, 1.0)
+        bgn.inputs["Strength"].default_value = 0.15
+        scene.world = w
+        world = w.name
+    _changed = True
+    return {"lights": lines, "off": off, "world": world, "kept_world": kept_world, "center_mm": [round(x * 1000, 1) for x in c],
+            "diag_mm": round(diag * 1000, 1), "view_transform": scene.view_settings.view_transform,
+            "camera": scene.camera.name if scene.camera else None}
+
+
+def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None, clay=False):
     """Render from the scene camera with the configured engine, only objs visible (lights/ground stay).
     engine/samples: for this image only. umg={"lights", "world"}: lights and world of another state instead of the current ones."""
     global _cam_device
@@ -567,7 +702,16 @@ def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
     hidden = _hide_others(scene, objs) if objs is not None else []
     linked, lights_off = [], []
     p = "{}.cam.{}.tmp.png".format(out, tag)
+    vl = bpy.context.view_layer
+    override, clay_mat = vl.material_override, None
     try:
+        if clay:  # gray card: every object neutral gray, so brightness depends on the light only
+            clay_mat = bpy.data.materials.new("_bl_clay")
+            clay_mat.use_nodes = True
+            n = next(n for n in clay_mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+            n.inputs["Base Color"].default_value = (0.5, 0.5, 0.5, 1.0)
+            n.inputs["Roughness"].default_value = 0.6
+            vl.material_override = clay_mat
         if umg is not None:
             for o in scene.objects:
                 if o.type == "LIGHT" and not o.hide_render:
@@ -597,6 +741,9 @@ def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
         im.load()
         os.remove(p)
     finally:
+        vl.material_override = override
+        if clay_mat is not None:
+            bpy.data.materials.remove(clay_mat)
         for o in hidden + lights_off:
             o.hide_render = False
         for o in linked:
@@ -696,7 +843,7 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         sec = (ax, float(v))
         if focus:
             raise ValueError("--section and --focus cannot be combined")
-    ref, new_ids, umg, eng = [], [], None, None
+    ref, new_ids, umg, eng, expo = [], [], None, None, None
     try:
         if compare:
             ref, new_ids, umg = _append_ref(compare, names, os.path.dirname(out), env=(mode == "cam"))
@@ -716,6 +863,11 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             raise RuntimeError("nothing to see: no visible geometry objects in the scene")
         if mode == "cam":
             cur = [("cam", _render_cam(out, panel, objs if compare else None, "now", engine, samples), None)]
+            im0 = cur[0][1]
+            eobjs = _split_ground(objs)[0]
+            clay = _render_cam(out, max(64, panel // 2), objs if compare else None, "clay", engine, 8, clay=True)
+            expo = exposure.stats(im0, _cam_box(scene, eobjs, im0.width, im0.height),
+                                  _cam_mask(scene, eobjs, im0.width, im0.height), clay)
             old = [("cam", _render_cam(out, panel, ref, "before", engine, samples, umg), None)] if compare else []
         else:
             frame = objs + ref
@@ -774,6 +926,9 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
     legend = ["{} · mode {}{} · objects {} · faces {}".format(
         "/".join(v for v, _i, _m in cur), mode,
         " · 1 px = {} mm".format("/".join("{:.3g}".format(x) for x in mmpp)) if mmpp else "", len(objs), faces), names_txt]
+    if expo:
+        legend += [ln.strip() for ln in exposure.describe(expo).split("  ⚠")[:1]] + \
+                  ["⚠" + w for w in exposure.describe(expo).split("  ⚠")[1:]]  # warning on its own line
     if empty:
         legend.append("⚠ EMPTY: nothing visible in {} (closeup missed? give the point in mm)".format("/".join(empty)))
     if compare:
@@ -792,7 +947,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
     return {"path": out, "w": final.width, "h": final.height, "mm_per_px": [round(x, 4) for x in mmpp],
             "views": [v for v, _i, _m in cur], "objects": len(objs), "faces": faces,
             "compare": compare, "changes": changes, "ground": [o.name for o in ground], "empty": empty,
-            "engine": (eng + (" ({})".format(_cam_device) if eng == "cycles" else "")) if mode == "cam" else None}
+            "engine": (eng + (" ({})".format(_cam_device) if eng == "cycles" else "")) if mode == "cam" else None, "exposure": expo,
+            "exposure_line": exposure.describe(expo) if expo else None}
 
 
 # --------------------------------------------------------------------------- qa

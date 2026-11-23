@@ -64,6 +64,7 @@ o=$("$BL" look --focus 500,500,2500 --radius 200 --compare --size 400); check "f
 o=$("$BL" look --focus 0.5,0.5,2.5 --radius 50 --size 400); check "focus daneben → Warnung LEER" grep -q "LEER" <<<"$o"
 o=$("$BL" look --compare last --size 400); check "compare last: gegen bl-save-Stand 0 %" grep -q "iso 0.0 %" <<<"$o"
 o=$("$BL" look --compare start --size 400); check "compare start" grep -q "test-kiste_start.blend" <<<"$o"
+o=$("$BL" look --obj Kiste --compare --size 400 2>&1); check "compare mit --obj" grep -q "Vergleich mit" <<<"$o"
 o=$("$BL" run -e 'import bmesh
 me=bpy.data.meshes.new("S"); bm=bmesh.new()
 v=[bm.verts.new(p) for p in [(0,0,0),(1,0,0),(1,1,0),(0,1,0),(0.5,-0.00001,0),(0.5,1.5,0)]]

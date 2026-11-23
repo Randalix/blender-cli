@@ -428,17 +428,17 @@ def _tile(im, label, font, bg):
 
 
 def _parse_focus(focus, radius_mm):
-    """focus: Objektname oder 'x,y,z' (Szeneneinheiten). radius_mm: Radius des Ausschnitts in mm."""
+    """focus: Objektname oder 'x,y,z' in mm (wie --radius). radius_mm: Radius des Ausschnitts in mm."""
     su = bpy.context.scene.unit_settings.scale_length or 1.0
     r = radius_mm / 1000.0 / su if radius_mm else None
     if focus in bpy.data.objects:
         mn, mx = bbox_world([bpy.data.objects[focus]])
         return (mn + mx) / 2, r or max((mx - mn).length / 2, 1e-4)
     try:
-        c = Vector([float(x) for x in focus.split(",")])
+        c = Vector([float(x) / 1000.0 / su for x in focus.split(",")])  # mm → Szeneneinheiten
         assert len(c) == 3
     except (ValueError, AssertionError):
-        raise ValueError("--focus braucht einen Objektnamen oder x,y,z, nicht {!r}".format(focus))
+        raise ValueError("--focus braucht einen Objektnamen oder x,y,z in mm, nicht {!r}".format(focus))
     if r is None:
         raise ValueError("--focus x,y,z braucht --radius (mm)")
     return c, r
@@ -485,8 +485,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             names_txt += "  (ohne Boden: {})".format(", ".join(o.name for o in ground))
         if fcs:
             su = scene.unit_settings.scale_length or 1.0
-            names_txt += "  · Ausschnitt um ({}) r {:.3g} mm".format(
-                ", ".join("{:.4g}".format(x) for x in fcs[0]), fcs[1] * su * 1000)
+            names_txt += "  · Ausschnitt um ({}) mm, r {:.3g} mm".format(
+                ", ".join("{:.4g}".format(x * su * 1000) for x in fcs[0]), fcs[1] * su * 1000)
     finally:
         if new_ids:
             bpy.data.batch_remove(new_ids)
@@ -522,8 +522,12 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         else:
             img = tiles[0]
     mmpp = [m for _v, _i, m in cur if m is not None]
-    legend = ["{} · Modus {} · 1 px = {} mm · Objekte {} · Faces {}".format(
-        "/".join(v for v, _i, _m in cur), mode, "/".join("{:.3g}".format(x) for x in mmpp) or "-", len(objs), faces), names_txt]
+    empty = [v for v, im, _m in cur if mode != "cam" and im.getextrema()[3][1] == 0]
+    legend = ["{} · Modus {}{} · Objekte {} · Faces {}".format(
+        "/".join(v for v, _i, _m in cur), mode,
+        " · 1 px = {} mm".format("/".join("{:.3g}".format(x) for x in mmpp)) if mmpp else "", len(objs), faces), names_txt]
+    if empty:
+        legend.append("⚠ LEER: in {} ist nichts zu sehen (Ausschnitt verfehlt? Punkt in mm angeben)".format("/".join(empty)))
     if compare:
         mx = max(c["pct"] for c in changes)
         legend.append("Vergleich mit {}: {}{}".format(
@@ -539,7 +543,7 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
     final.save(out)
     return {"path": out, "w": final.width, "h": final.height, "mm_per_px": [round(x, 4) for x in mmpp],
             "views": [v for v, _i, _m in cur], "objects": len(objs), "faces": faces,
-            "compare": compare, "changes": changes, "ground": [o.name for o in ground]}
+            "compare": compare, "changes": changes, "ground": [o.name for o in ground], "empty": empty}
 
 
 # --------------------------------------------------------------------------- save

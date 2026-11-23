@@ -299,9 +299,13 @@ def cmd_info(a):
 
 def compare_ref(arg, pdir, vdir):
     """Vergleichsstand: 'auto' = zuletzt gespeicherte .blend (aktive Version, sonst ältere), sonst Pfad."""
-    if arg == "auto":  # Startstand der Version (von `bl version`); `bl save` überschreibt ihn nicht
+    if arg in ("auto", "start", "last"):
         start = vdir / "blend" / (pdir.name + "_start.blend")
-        ref = start if start.is_file() else core.newest_blend(pdir, vdir)
+        last = vdir / "blend" / (pdir.name + ".blend")
+        if arg == "last":  # zuletzt per `bl save` gespeicherter Zwischenstand
+            ref = last if last.is_file() else (start if start.is_file() else core.newest_blend(pdir, vdir))
+        else:  # Startstand der Version (von `bl version`); `bl save` überschreibt ihn nicht
+            ref = start if start.is_file() else core.newest_blend(pdir, vdir)
         if ref is None:
             raise Fail("kein gespeicherter Stand zum Vergleichen: vor der Änderung `bl version \"<label>\"` oder `bl save`")
         return ref
@@ -327,6 +331,8 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
         str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius))
     out("✓ Bild {}  {}×{} px (≈{} Token)  1 px = {} mm".format(
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
+    if r.get("empty"):
+        out("  ⚠ LEER: in {} ist nichts zu sehen. Ausschnitt verfehlt? --focus x,y,z ist in mm.".format("/".join(r["empty"])))
     if r.get("ground"):
         out("  Boden nicht gerahmt/gezeigt: {} (mit --obj gezielt wählen)".format(", ".join(r["ground"])))
     if ref:
@@ -457,8 +463,9 @@ def build_parser():
     p.add_argument("--size", type=int, default=768, help="Bildbreite in px")
     p.add_argument("--out", help="Name im Bild-Protokoll")
     p.add_argument("--compare", nargs="?", const="auto", metavar="BLEND",
-                   help="vorher/jetzt nebeneinander mit gleicher Kamera; ohne Wert: Startstand der Version")
-    p.add_argument("--focus", metavar="OBJ|x,y,z", help="Ausschnitt um ein Objekt oder einen Punkt (Szeneneinheiten)")
+                   help="vorher/jetzt nebeneinander mit gleicher Kamera; ohne Wert oder 'start': Startstand der Version, "
+                        "'last': zuletzt per bl save gespeicherter Stand, sonst Pfad")
+    p.add_argument("--focus", metavar="OBJ|x,y,z", help="Ausschnitt um ein Objekt oder einen Punkt x,y,z in mm")
     p.add_argument("--radius", type=float, metavar="MM", help="Radius des Ausschnitts in mm")
     p.set_defaults(fn=cmd_look)
     p = sp.add_parser("save", help="Szene in blend/ der aktiven Version speichern")

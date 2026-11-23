@@ -59,8 +59,11 @@ o=$("$BL" look --mode wire --compare --size 400); check "compare wire" grep -q "
 "$BL" save >/dev/null; o=$("$BL" look --compare --size 400); check "compare nach save nutzt Startstand" bash -c "grep -q 'test-kiste_start.blend' <<<\"$o\" && ! grep -q 'kaum sichtbar' <<<\"$o\""
 o=$("$BL" look --compare "$BL_ROOT/test-kiste/v002_zweiter-stand/blend/test-kiste.blend" --size 400); check "compare gegen gespeicherten Stand: 0 %" grep -q "iso 0.0 %" <<<"$o"
 o=$("$BL" look --focus Kiste --radius 100 --size 400); check "focus: feinerer Maßstab" bash -c "grep -qE '1 px = 0\.[0-9]+ mm' <<<\"$o\""
-o=$("$BL" look --focus 0,0,2 --size 400 2>&1); rc=$?; check "focus Punkt ohne radius → Fehler" bash -c "[ $rc -eq 2 ] && grep -q 'braucht --radius' <<<\"$o\""
-o=$("$BL" look --focus 0.5,0.5,2.5 --radius 200 --compare --size 400); check "focus + compare" grep -q "Vergleich mit" <<<"$o"
+o=$("$BL" look --focus 0,0,2000 --size 400 2>&1); rc=$?; check "focus Punkt ohne radius → Fehler" bash -c "[ $rc -eq 2 ] && grep -q 'braucht --radius' <<<\"$o\""
+o=$("$BL" look --focus 500,500,2500 --radius 200 --compare --size 400); check "focus in mm + compare" bash -c "grep -q 'Vergleich mit' <<<\"$o\" && ! grep -q LEER <<<\"$o\""
+o=$("$BL" look --focus 0.5,0.5,2.5 --radius 50 --size 400); check "focus daneben → Warnung LEER" grep -q "LEER" <<<"$o"
+o=$("$BL" look --compare last --size 400); check "compare last: gegen bl-save-Stand 0 %" grep -q "iso 0.0 %" <<<"$o"
+o=$("$BL" look --compare start --size 400); check "compare start" grep -q "test-kiste_start.blend" <<<"$o"
 o=$("$BL" run -e 'import bmesh
 me=bpy.data.meshes.new("S"); bm=bmesh.new()
 v=[bm.verts.new(p) for p in [(0,0,0),(1,0,0),(1,1,0),(0,1,0),(0.5,-0.00001,0),(0.5,1.5,0)]]

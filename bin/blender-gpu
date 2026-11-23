@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# Offizielles Blender 5.2.4 LTS mit CUDA/OptiX (Nix-Blender hat keins). LD_LIBRARY_PATH der Agenten-Shells stoert (alsa/glibc).
-exec env -u LD_LIBRARY_PATH /mnt/caches/ComfyUI/_tools/blender-5.2.4-linux-x64/blender "$@"

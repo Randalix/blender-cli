@@ -501,8 +501,11 @@ def cmd_docs(a):
         r = docs.lookup(q)
         if r:
             f, lines = r
+            import textwrap
             out("{}  ({})".format(q, f.name))
-            out(*core.clip_lines((core.clip_text(docs.clean(ln), width) for ln in lines), a.zeilen))
+            wrapped = [w for ln in lines for w in (textwrap.wrap(docs.clean(ln), width, subsequent_indent="    ",
+                                                                 break_on_hyphens=False) or [""])]
+            out(*core.clip_lines(wrapped, a.zeilen))  # umbrechen statt kürzen: Signaturen vollständig
             return
     scope = "manual" if a.manual else "api"
     r = docs.search(q, scope, a.n, a.hit)

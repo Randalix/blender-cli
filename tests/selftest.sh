@@ -188,6 +188,28 @@ nl=$(ls "$BL_ROOT"/test-box/*/nolight.blend 2>/dev/null | head -1)
 o=$("$BL" look --mode cam --compare "$nl" --size 160 --samples 2); check "cam compare against a state without lights: warning" has "comparison state has no lights"
 o=$("$BL" look --mode cam --compare last --size 160 --samples 2); check "cam compare with lights: no such warning" hasnt "has no lights"
 "$BL" run -e 'bpy.data.objects.remove(obj("Cyl"))' >/dev/null; rm -f "$nl"
+# --- surface inspection: zebra / facing follow the shading normal
+"$BL" run -e 'for i, flat in enumerate((0, 1)):
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=0.5, location=(i * 1.2, 4, 0.5))
+    o = bpy.context.object; o.name = ("ZFlat" if flat else "ZSmooth")
+    if not flat: bpy.ops.object.shade_smooth()
+result = {"vt": bpy.context.scene.view_settings.view_transform, "eng": bpy.context.scene.render.engine}' >/dev/null
+st0=$("$BL" run -e 'result={"vt": bpy.context.scene.view_settings.view_transform, "eng": bpy.context.scene.render.engine, "ov": str(bpy.context.view_layer.material_override)}' | tail -1)
+o=$("$BL" look --mode zebra --view front --obj ZSmooth --size 300 --stripes 8); check "zebra: image" has "_zebra|zebra"
+zimg=$(grep -o "/[^ ]*\.png" <<<"$o")
+o=$("$BL" run -e "from PIL import Image; im=Image.open('$zimg').convert('RGBA'); px=[p for p in im.crop((0,0,im.width,im.width)).getdata() if p[3]>0 and p[:3]!=(242,242,242)]
+bw=sum(1 for r,g,b,a in px if max(r,g,b)<40 or min(r,g,b)>215); result={'bw': round(100*bw/max(len(px),1)), 'black': sum(1 for r,g,b,a in px if max(r,g,b)<40)>500, 'white': sum(1 for r,g,b,a in px if min(r,g,b)>215 and (r,g,b)!=(242,242,242))>500}")
+check "zebra: black and white stripes" has '"bw": (9[0-9]|100), "black": true, "white": true'
+o=$("$BL" look --mode zebra --view front --obj ZFlat --size 300); fimg=$(grep -o "/[^ ]*\.png" <<<"$o")
+o=$("$BL" run -e "from PIL import Image, ImageChops; a=Image.open('$zimg').convert('L'); b=Image.open('$fimg').convert('L'); d=ImageChops.difference(a,b); result={'diff': round(100*sum(1 for v in d.getdata() if v>100)/(a.width*a.height),1)}")
+check "zebra: flat shading looks different from smooth" has '"diff": ([3-9]|[1-9][0-9])'
+o=$("$BL" look --mode facing --view front --obj ZSmooth --size 300); cimg=$(grep -o "/[^ ]*\.png" <<<"$o")
+o=$("$BL" run -e "from PIL import Image; im=Image.open('$cimg').convert('HSV'); hs={h//32 for h,s,v in im.getdata() if s>120}; result={'hues': len(hs)}")
+check "facing: rainbow bands" has '"hues": [5-8]'
+o=$("$BL" run -e 'result={"vt": bpy.context.scene.view_settings.view_transform, "eng": bpy.context.scene.render.engine, "ov": str(bpy.context.view_layer.material_override)}' | tail -1)
+check "zebra/facing: render settings restored" test "$o" = "$st0"
+o=$("$BL" run -e 'result={"m": sorted(m.name for m in bpy.data.materials if m.name.startswith("_bl_"))}'); check "zebra/facing: no leftover material" has '"m": \[\]'
+"$BL" run -e 'for n in ("ZFlat", "ZSmooth"): bpy.data.objects.remove(obj(n))' >/dev/null
 # --- bl open switches scenes, protects unsaved changes
 pid1=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION/worker.json")
 o=$("$BL" open --empty 2>&1); rc=$?; check "open with changes → abort" bash -c "[ $rc -eq 2 ]"; check "open: message names unsaved changes" has "unsaved changes"

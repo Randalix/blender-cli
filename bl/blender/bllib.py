@@ -433,7 +433,80 @@ def _section_check(objs):
         raise ValueError("--section cuts meshes only; selected: {}".format(", ".join(o.name for o in objs) or "-"))
 
 
-def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section=None):
+INSPECT_MODES = ("zebra", "facing")
+
+
+def _inspect_material(mode, stripes):
+    """Emission material for surface inspection, driven by the shading normal (smooth/flat, custom normals):
+    zebra = black/white stripes reflected in camera space (paint inspection tunnel), facing = hue bands of the
+    angle between shading normal and view direction. → material"""
+    m = bpy.data.materials.new("_bl_" + mode)
+    m.use_nodes = True
+    nt = m.node_tree
+    nt.nodes.clear()
+    N = nt.nodes.new
+    L = nt.links.new
+    em = N("ShaderNodeEmission")
+    outn = N("ShaderNodeOutputMaterial")
+    L(em.outputs["Emission"], outn.inputs["Surface"])
+    geo = N("ShaderNodeNewGeometry")
+
+    def op(name, a, b=None):
+        n = N("ShaderNodeMath")
+        n.operation = name
+        for i, v in enumerate((a, b)):
+            if v is None:
+                continue
+            if isinstance(v, (int, float)):
+                n.inputs[i].default_value = v
+            else:
+                L(v, n.inputs[i])
+        return n.outputs[0]
+
+    if mode == "zebra":
+        def to_cam(sock, kind):
+            t = N("ShaderNodeVectorTransform")
+            t.vector_type, t.convert_from, t.convert_to = kind, "WORLD", "CAMERA"
+            L(sock, t.inputs[0])
+            return t.outputs[0]
+        nrm = to_cam(geo.outputs["Normal"], "NORMAL")
+        inc = to_cam(geo.outputs["Incoming"], "VECTOR")
+        neg = N("ShaderNodeVectorMath")
+        neg.operation = "SCALE"
+        L(inc, neg.inputs[0])
+        neg.inputs["Scale"].default_value = -1.0
+        ref = N("ShaderNodeVectorMath")
+        ref.operation = "REFLECT"
+        L(neg.outputs[0], ref.inputs[0])
+        L(nrm, ref.inputs[1])
+        sep = N("ShaderNodeSeparateXYZ")
+        L(ref.outputs[0], sep.inputs[0])
+        s = op("MULTIPLY", op("ADD", sep.outputs["X"], sep.outputs["Y"]), 0.7071 * _zebra_k(stripes))
+        v = op("GREATER_THAN", op("COSINE", s), 0.0)  # cos: a flat face toward the camera sits mid-stripe, not on an edge
+        col = N("ShaderNodeCombineColor")
+        for i in range(3):
+            L(v, col.inputs[i])
+        L(col.outputs[0], em.inputs["Color"])
+    else:
+        lw = N("ShaderNodeLayerWeight")
+        lw.inputs["Blend"].default_value = 0.5
+        h = op("FRACT", op("MULTIPLY", lw.outputs["Facing"], float(stripes) / 2.0))
+        col = N("ShaderNodeCombineColor")
+        col.mode = "HSV"
+        L(h, col.inputs[0])
+        col.inputs[1].default_value = 0.85
+        col.inputs[2].default_value = 1.0
+        L(col.outputs[0], em.inputs["Color"])
+    return m
+
+
+def _zebra_k(stripes):
+    """cos(k·s) with s = reflection · diagonal in [-1.41, 1.41]: k = π·stripes/2 gives about `stripes` stripes over the
+    full range of directions."""
+    return math.pi * stripes / 2.0
+
+
+def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section=None, stripes=12):
     """Workbench renders of objs (everything else hidden), camera framed on frame. → [(view, RGBA, mm/px)]
     section=('x'|'y'|'z', mm): section view, looking perpendicular onto the plane."""
     from PIL import Image
@@ -449,7 +522,12 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
     saved = {"engine": r.engine, "rx": r.resolution_x, "ry": r.resolution_y, "pct": r.resolution_percentage,
              "film": r.film_transparent, "fp": r.filepath, "cam": scene.camera, "fmt": r.image_settings.file_format,
              "cmode": r.image_settings.color_mode,
-             "light": sh.light, "ctype": sh.color_type, "cav": sh.show_cavity, "outl": sh.show_object_outline}
+             "light": sh.light, "ctype": sh.color_type, "cav": sh.show_cavity, "outl": sh.show_object_outline,
+             "vt": scene.view_settings.view_transform, "look": scene.view_settings.look,
+             "expo": scene.view_settings.exposure, "gamma": scene.view_settings.gamma,
+             "samples": scene.eevee.taa_render_samples}
+    vl = bpy.context.view_layer
+    override = vl.material_override
     temps, colors, cut_ids, hidden, res = [], {}, [], [], []
     if section:
         _section_check(objs)
@@ -473,6 +551,18 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
         sh.show_object_outline = True
         if section:
             sh.color_type = "MATERIAL"
+        if mode in INSPECT_MODES:  # EEVEE + emission override: exact colors, scene lights do not matter
+            _set_engine(r, "eevee")
+            scene.eevee.taa_render_samples = 16
+            vs = scene.view_settings
+            vs.view_transform, vs.exposure, vs.gamma = "Standard", 0.0, 1.0
+            try:
+                vs.look = "None"
+            except TypeError:
+                pass
+            m = _inspect_material(mode, stripes)
+            cut_ids.append(m)
+            vl.material_override = m
         if mode == "wire":
             sh.color_type = "OBJECT"
             for o in objs:
@@ -528,6 +618,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
             bpy.data.objects.remove(o, do_unlink=True)
             if data is not None:
                 bpy.data.cameras.remove(data)
+        vl.material_override = override  # before removing the inspection material
         for i in cut_ids:
             (bpy.data.meshes if isinstance(i, bpy.types.Mesh) else bpy.data.materials).remove(i)
         for o in hidden:
@@ -537,6 +628,14 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
         r.image_settings.file_format, r.image_settings.color_mode = saved["fmt"], saved["cmode"]
         scene.camera = saved["cam"]
         sh.light, sh.color_type, sh.show_cavity, sh.show_object_outline = saved["light"], saved["ctype"], saved["cav"], saved["outl"]
+        vl.material_override = override
+        vs = scene.view_settings
+        vs.view_transform, vs.exposure, vs.gamma = saved["vt"], saved["expo"], saved["gamma"]
+        try:
+            vs.look = saved["look"]
+        except TypeError:
+            pass
+        scene.eevee.taa_render_samples = saved["samples"]
     return res
 
 
@@ -855,7 +954,7 @@ def _parse_focus(focus, radius_mm):
 
 
 def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, compare=None, bg=(242, 242, 242),
-         focus=None, radius_mm=None, section=None, engine=None, samples=None):
+         focus=None, radius_mm=None, section=None, engine=None, samples=None, stripes=12):
     """Render views into one PNG with a text strip. mode: solid|wire (Workbench, ortho, framed) or cam.
     compare=<.blend>: the same view of the saved state on the left ("before"), current scene on the right ("now"),
     same camera for both; change in % with a red box."""
@@ -903,8 +1002,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             old = [("cam", _render_cam(out, panel, ref, "before", engine, samples, umg), None)] if compare else []
         else:
             frame = objs + ref
-            cur = _render_views(out, objs, frame, views, mode, panel, "now", fcs, sec)
-            old = _render_views(out, ref, frame, views, mode, panel, "before", fcs, sec) if compare else []
+            cur = _render_views(out, objs, frame, views, mode, panel, "now", fcs, sec, stripes)
+            old = _render_views(out, ref, frame, views, mode, panel, "before", fcs, sec, stripes) if compare else []
         faces = sum(mesh_stats(o, manifold=False).get("f", 0) for o in objs if o.type == "MESH")
         names_txt = ", ".join(o.name for o in objs[:8]) + (" …" if len(objs) > 8 else "")
         if ground:
@@ -917,6 +1016,10 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             eng = engine or {"CYCLES": "cycles", "BLENDER_WORKBENCH": "workbench"}.get(scene.render.engine, "eevee")
             names_txt += "  · Engine {}{}{}".format(eng, " ({})".format(_cam_device) if eng == "cycles" else "",
                                                     " · {} Samples".format(samples) if samples and eng != "workbench" else "")
+        if mode == "zebra":
+            names_txt += "  · {} stripes: smooth = even flow; dent = wobble; kink/shading break = jump".format(stripes)
+        elif mode == "facing":
+            names_txt += "  · {} hue bands of the normal angle: smooth = even bands; dent = bands bulge or break".format(stripes)
         if fcs:
             su = scene.unit_settings.scale_length or 1.0
             names_txt += "  · closeup around ({}) mm, r {:.3g} mm".format(

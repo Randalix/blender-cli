@@ -395,7 +395,7 @@ def compare_ref(arg, pdir, vdir):
 
 
 def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=None, radius=None, section=None,
-            engine=None, samples=None):
+            engine=None, samples=None, stripes=12):
     pdir, vdir = active()
     prev = vdir / "preview"
     prev.mkdir(parents=True, exist_ok=True)
@@ -410,8 +410,9 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
     path = core.next_numbered(prev, stem, ".png")
     panel = size // 2 if (sheet or ref) else size
     r = call("result = bllib.look({!r}, views={!r}, names={!r}, mode={!r}, panel={}, sheet={}, compare={!r}, focus={!r}, radius_mm={!r}, "
-             "section={!r}, engine={!r}, samples={!r})".format(
-                 str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius, section, engine, samples))
+             "section={!r}, engine={!r}, samples={!r}, stripes={!r})".format(
+                 str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius, section, engine,
+                 samples, stripes))
     out("✓ image {}  {}×{} px (≈{} tokens)  1 px = {} mm".format(
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
     if r.get("engine"):
@@ -465,7 +466,8 @@ def cmd_look(a):
     if (a.engine or a.samples) and a.mode != "cam":
         raise Fail("✗ --engine/--samples only with --mode cam")
     do_look(names, views, a.mode, a.size, (a.sheet or len(views) > 1) and not a.section, label=a.out or "look",
-            compare=a.compare, focus=a.focus, radius=a.radius, section=a.section, engine=a.engine, samples=a.samples)
+            compare=a.compare, focus=a.focus, radius=a.radius, section=a.section, engine=a.engine, samples=a.samples,
+            stripes=a.stripes)
 
 
 def cmd_save(a):
@@ -657,7 +659,10 @@ def build_parser():
     p.add_argument("--view", action="append", choices=sorted(["iso", "front", "back", "right", "left", "top", "bottom"]))
     p.add_argument("--sheet", action="store_true", help="iso/front/right/top in one image")
     p.add_argument("--obj", action="append", help="only these objects (repeatable)")
-    p.add_argument("--mode", default="solid", choices=["solid", "wire", "cam"])
+    p.add_argument("--mode", default="solid", choices=["solid", "wire", "cam", "zebra", "facing"],
+                   help="zebra: reflected stripes (paint inspection), facing: hue bands of the normal angle; both follow "
+                        "the shading normal and show dents, kinks and shading breaks")
+    p.add_argument("--stripes", type=int, default=12, help="--mode zebra/facing: number of stripes/bands")
     p.add_argument("--size", type=int, default=768, help="image width in px")
     p.add_argument("--out", help="name in the image journal")
     p.add_argument("--compare", nargs="?", const="auto", metavar="BLEND",

@@ -9,8 +9,14 @@ VERSION_RE = re.compile(r"^v(\d{3,})_(.+)$")
 _UMLAUTE = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss", "Ä": "ae", "Ö": "oe", "Ü": "ue"})
 
 
+DEFAULT_ROOT = "/mnt/build/blender"
+
+
 def root() -> Path:
-    return Path(os.environ.get("BL_ROOT", "/mnt/build/blender"))
+    p = Path(os.environ.get("BL_ROOT") or DEFAULT_ROOT)
+    if not p.is_absolute():
+        raise ValueError("BL_ROOT muss ein absoluter Pfad sein, ist {!r}".format(str(p)))
+    return p
 
 
 def session_key(env=None) -> str:

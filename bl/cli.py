@@ -357,6 +357,10 @@ def cmd_doctor(a):
     else:
         ok = False
         out("✗ Ablage fehlt: {}".format(r))
+    pil = list((REPO / ".deps").glob("PIL/__init__.py"))
+    if not pil:
+        ok = False
+    out("PIL im Worker: {}".format("ok ({})".format(REPO / ".deps") if pil else "✗ fehlt → bash tools/install.sh"))
     pdir, vdir = active(need=False)
     out("Projekt {}  Version {}".format(pdir.name if pdir else "-", vdir.name if vdir else "-"))
     ws = []
@@ -443,6 +447,11 @@ def main(argv=None):
     except Fail as ex:
         print(str(ex), file=sys.stderr)
         return ex.code
+    except ValueError as ex:
+        if "BL_ROOT" not in str(ex):
+            raise
+        print("✗ " + str(ex), file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         return 130
     return 0

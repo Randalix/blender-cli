@@ -16,7 +16,7 @@ ap.add_argument("--repo", required=True)
 ap.add_argument("--empty", action="store_true", help="Default-Szene leeren (kein Würfel/Licht/Kamera)")
 args = ap.parse_args(argv)
 
-sys.path[:0] = [os.path.join(args.repo, "vendor"), os.path.join(args.repo, "bl", "blender")]
+sys.path[:0] = [os.path.join(args.repo, "vendor"), os.path.join(args.repo, "bl", "blender"), os.path.join(args.repo, ".deps")]
 
 import bpy  # noqa: E402
 

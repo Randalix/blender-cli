@@ -1,4 +1,5 @@
 """Unit-Tests für bl/core.py (ohne Blender). Aufruf: <blender-python> -m unittest discover -s tests"""
+import json
 import os
 import sys
 import tempfile
@@ -63,24 +64,26 @@ class CoreTest(unittest.TestCase):
             j1, n1 = core.journal_file(p, "Körper", "a = 1")
             self.assertEqual((j1.name, n1), ("001_koerper.py", True))
             self.assertEqual(j1.read_text(), "a = 1\n")
-            j2, n2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt → wiederverwendet
+            j2, n2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt, letzte Datei → wiederverwendet
             self.assertEqual((j2, n2), (j1, False))
             j3, n3 = core.journal_file(p, "henkel", "b = 2")
             self.assertEqual((j3.name, n3), ("002_henkel.py", True))
-            j4, n4 = core.journal_file(p, "Körper", "a = 1")  # letzte koerper-Datei ist 001 → wiederverwendet
-            self.assertEqual((j4.name, n4), ("001_koerper.py", False))
-            j5, n5 = core.journal_file(p, "Körper", "a = 2")
-            self.assertEqual((j5.name, n5), ("003_koerper.py", True))
-            j6, n6 = core.journal_file(p, "Körper", "a = 1")  # Vergleich nur mit der letzten Fassung
-            self.assertEqual((j6.name, n6), ("004_koerper.py", True))
-            (p / "005_koerper-alt.py").write_text("a = 2\n")  # anderer Stamm zählt nicht
-            self.assertEqual(core.journal_file(p, "koerper", "a = 1")[1], False)
+            j4, n4 = core.journal_file(p, "Körper", "a = 1")  # koerper → henkel → koerper: drei Läufe im Journal
+            self.assertEqual((j4.name, n4), ("003_koerper.py", True))
+            j5, n5 = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # andere Werte → neue Datei + args.json
+            self.assertEqual((j5.name, n5), ("004_koerper.py", True))
+            self.assertEqual(json.loads((p / "004_koerper.args.json").read_text()), {"n": 3})
+            j6, n6 = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # gleiche Werte → wiederverwendet
+            self.assertEqual((j6.name, n6), ("004_koerper.py", False))
+            j7, n7 = core.journal_file(p, "Körper", "a = 1")  # ohne Werte ≠ {"n": 3}
+            self.assertEqual((j7.name, n7), ("005_koerper.py", True))
+            self.assertFalse((p / "005_koerper.args.json").exists())
 
     def test_parse_set(self):
         self.assertEqual(core.parse_set(["n=3", "f=0.5", "l=[1,2]", "s=abc", "t=true", "leer="]),
                          {"n": 3, "f": 0.5, "l": [1, 2], "s": "abc", "t": True, "leer": ""})
         self.assertEqual(core.parse_set(None), {})
-        for bad in ("ohne", "1x=2", "=3"):
+        for bad in ("ohne", "1x=2", "=3", "x=NaN", "x=1e999", "x=[1,-Infinity]"):
             with self.assertRaises(ValueError):
                 core.parse_set([bad])
 

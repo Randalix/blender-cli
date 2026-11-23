@@ -155,13 +155,18 @@ def hits(origin_mm, direction, names=None, max_m=100.0):
     bm.free()
     o = Vector(origin_mm) / 1000.0 / su
     d = Vector(direction).normalized()
-    out, eps = [], 1e-5 / su  # 0,01 mm: kleiner bleibt der Strahl auf derselben Fläche hängen
+    out = []
     for _ in range(10000):
         loc, _n, _i, _dist = tree.ray_cast(o, d, max_m / su)
         if loc is None:
             break
         out.append([round(x * su * 1000.0, 2) for x in loc])
-        o = loc + d * eps
+        # Schritt hinter den Treffer: mind. 0,01 mm, bei großen Koordinaten relativ (float32 im BVH)
+        eps = max(1e-5 / su, max(abs(x) for x in loc) * 1e-6)
+        nxt = loc + d * eps
+        if (nxt - loc).length < eps / 2:
+            break
+        o = nxt
     return out
 
 
@@ -266,11 +271,6 @@ def _font(size):
     return ImageFont.load_default()
 
 
-_ID_COLLS = ("objects", "meshes", "materials", "images", "node_groups", "textures", "curves", "collections",
-             "cameras", "lights", "actions", "metaballs", "lattices", "armatures", "volumes", "pointclouds",
-             "hair_curves", "grease_pencils", "fonts", "particles")
-
-
 def _hide_others(scene, keep):
     keep_p = {o.as_pointer() for o in keep}
     hidden = []
@@ -299,7 +299,8 @@ def _append_ref(path, names, tmpdir, env=False):
     """Lädt die Geometrie-Objekte eines gespeicherten Stands temporär in die Szene. → (objekte, neue IDs zum Entfernen, umgebung).
     env=True (Kamera-Vergleich): umgebung = {"lights": sichtbare Lichter des Stands (nicht verlinkt), "world": dessen Welt}."""
     import shutil
-    colls = [c for c in _ID_COLLS + ("scenes", "worlds") if hasattr(bpy.data, c)]
+    colls = [c for c in dir(bpy.data) if c not in ("window_managers", "screens", "workspaces", "libraries")
+             and isinstance(getattr(bpy.data, c, None), bpy.types.bpy_prop_collection)]
     tmp = os.path.join(tmpdir, "_bl_ref_{}.blend".format(os.getpid()))
     shutil.copyfile(path, tmp)  # Kopie: aus der gerade offenen Datei kann Blender nicht anhängen
     before = {c: {i.as_pointer() for i in getattr(bpy.data, c)} for c in colls}
@@ -343,8 +344,9 @@ def _section_copies(scene, objs, section, mn, mx):
     su = scene.unit_settings.scale_length or 1.0
     v = v_mm / 1000.0 / su
     i = "xyz".index(ax)
-    size = max((mx - mn).length, 1e-3) * 4
     c = (mn + mx) / 2
+    diag = max((mx - mn).length, 1e-3)
+    size = 2 * (diag + abs(v - c[i])) + diag  # deckt die Szene auch, wenn die Ebene weit außerhalb liegt
     center = Vector(c)
     center[i] = v + size / 2 if ax == "z" else v - size / 2
     me = bpy.data.meshes.new("_bl_schnitt")
@@ -375,6 +377,11 @@ def _section_copies(scene, objs, section, mn, mx):
     return copies, [cutter] + copies, (me, mat)
 
 
+def _section_check(objs):
+    if not any(o.type == "MESH" for o in objs):
+        raise ValueError("--section schneidet nur Meshes; gewählt: {}".format(", ".join(o.name for o in objs) or "-"))
+
+
 def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section=None):
     """Workbench-Renders der Objekte objs (alles andere ausgeblendet), Kamera gerahmt auf frame. → [(view, RGBA, mm/px)]
     section=('x'|'y'|'z', mm): Schnittansicht, Blick senkrecht auf die Ebene."""
@@ -392,18 +399,19 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
              "film": r.film_transparent, "fp": r.filepath, "cam": scene.camera, "fmt": r.image_settings.file_format,
              "cmode": r.image_settings.color_mode,
              "light": sh.light, "ctype": sh.color_type, "cav": sh.show_cavity, "outl": sh.show_object_outline}
-    temps, colors, cut_ids = [], {}, None
-    cam_data = bpy.data.cameras.new("_bl_look_cam")
-    cam = bpy.data.objects.new("_bl_look_cam", cam_data)
-    scene.collection.objects.link(cam)
-    temps.append(cam)
+    temps, colors, cut_ids, hidden, res = [], {}, None, [], []
     if section:
-        objs, cut_temps, cut_ids = _section_copies(scene, objs, section, mn, mx)
-        temps += cut_temps
-        views = [SECTION_VIEW[section[0]]]
-    hidden = _hide_others(scene, objs)
-    res = []
-    try:
+        _section_check(objs)
+    try:  # alles Temporäre ab hier wird im finally entfernt, auch bei Fehlern
+        cam_data = bpy.data.cameras.new("_bl_look_cam")
+        cam = bpy.data.objects.new("_bl_look_cam", cam_data)
+        scene.collection.objects.link(cam)
+        temps.append(cam)
+        if section:
+            objs, cut_temps, cut_ids = _section_copies(scene, objs, section, mn, mx)
+            temps += cut_temps
+            views = [SECTION_VIEW[section[0]]]
+        hidden += _hide_others(scene, objs)
         r.engine = "BLENDER_WORKBENCH"
         r.resolution_x = r.resolution_y = panel
         r.resolution_percentage = 100
@@ -533,8 +541,7 @@ def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
     r = scene.render
     saved = (r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, r.image_settings.file_format, r.engine)
     s_eevee = scene.eevee.taa_render_samples
-    s_cyc = scene.cycles.samples if hasattr(scene, "cycles") else None
-    dev = scene.cycles.device if hasattr(scene, "cycles") else None
+    s_cyc = dev = None
     world = scene.world
     aspect = r.resolution_y / max(r.resolution_x, 1)
     hidden = _hide_others(scene, objs) if objs is not None else []
@@ -553,6 +560,8 @@ def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
             scene.world = umg["world"]
         if engine:
             _set_engine(r, engine)
+        if hasattr(scene, "cycles"):  # erst hier: _set_engine lädt Cycles evtl. gerade erst
+            s_cyc, dev = scene.cycles.samples, scene.cycles.device
         if r.engine == "CYCLES":
             _cam_device = _cycles_gpu(scene)
         if samples:
@@ -576,8 +585,7 @@ def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
         r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, r.image_settings.file_format, r.engine = saved
         scene.eevee.taa_render_samples = s_eevee
         if s_cyc is not None:
-            scene.cycles.samples = s_cyc
-            scene.cycles.device = dev
+            scene.cycles.samples, scene.cycles.device = s_cyc, dev
     return im
 
 
@@ -668,7 +676,7 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         sec = (ax, float(v))
         if focus:
             raise ValueError("--section und --focus nicht zusammen")
-    ref, new_ids, umg = [], [], None
+    ref, new_ids, umg, eng = [], [], None, None
     try:
         if compare:
             ref, new_ids, umg = _append_ref(compare, names, os.path.dirname(out), env=(mode == "cam"))
@@ -698,11 +706,11 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         if ground:
             names_txt += "  (ohne Boden: {})".format(", ".join(o.name for o in ground))
         if sec:
-            names_txt += "  · Schnitt {}={:g} mm (rot = Schnittfläche)".format(*sec)
+            names_txt += "  · Schnitt {}={:g} mm{}".format(sec[0], sec[1], " (rot = Schnittfläche)" if mode == "solid" else "")
         if mode == "cam":
-            names_txt += "  · Engine {}{}{}".format(engine or scene.render.engine.lower(),
-                                                    " ({})".format(_cam_device) if (engine or scene.render.engine.lower()) in ("cycles",) else "",
-                                                    " · {} Samples".format(samples) if samples else "")
+            eng = engine or {"CYCLES": "cycles", "BLENDER_WORKBENCH": "workbench"}.get(scene.render.engine, "eevee")
+            names_txt += "  · Engine {}{}{}".format(eng, " ({})".format(_cam_device) if eng == "cycles" else "",
+                                                    " · {} Samples".format(samples) if samples and eng != "workbench" else "")
         if fcs:
             su = scene.unit_settings.scale_length or 1.0
             names_txt += "  · Ausschnitt um ({}) mm, r {:.3g} mm".format(
@@ -763,7 +771,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
     final.save(out)
     return {"path": out, "w": final.width, "h": final.height, "mm_per_px": [round(x, 4) for x in mmpp],
             "views": [v for v, _i, _m in cur], "objects": len(objs), "faces": faces,
-            "compare": compare, "changes": changes, "ground": [o.name for o in ground], "empty": empty}
+            "compare": compare, "changes": changes, "ground": [o.name for o in ground], "empty": empty,
+            "engine": (eng + (" ({})".format(_cam_device) if eng == "cycles" else "")) if mode == "cam" else None}
 
 
 # --------------------------------------------------------------------------- qa
@@ -824,7 +833,7 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None):
 
 def save(path):
     global _changed
-    _changed = False
     os.makedirs(os.path.dirname(path), exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False)
+    _changed = False  # erst nach erfolgreichem Speichern
     return {"path": path, "bytes": os.path.getsize(path)}

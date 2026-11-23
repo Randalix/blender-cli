@@ -12,6 +12,7 @@ ok()   { echo "  ok   $*"; }
 bad()  { echo "  FAIL $*"; fail=1; }
 check(){ local d="$1"; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
 has(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" || return 1; done; }  # alle Muster in $o
+hasnt(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" && return 1; done; return 0; }  # keins der Muster in $o
 cleanup(){ "$BL" close >/dev/null 2>&1; rm -rf "$BL_ROOT" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION"; }
 trap cleanup EXIT
 
@@ -31,8 +32,10 @@ printf 'result = {"a": args.get("n", 0) * 2}\n' > "$BL_ROOT/ka.py"
 printf 'bpy.app.driver_namespace["bl_kb"] = args.get("name", "-"); result = {"b": args.get("name", "-")}\n' > "$BL_ROOT/kb.py"
 o=$("$BL" run "$BL_ROOT/ka.py" "$BL_ROOT/kb.py" --set n=21 --set name=Tasse)
 check "run Kette: beide Skripte, --set" has '"a": 42' '"b": "Tasse"'
-o=$("$BL" run "$BL_ROOT/ka.py" --set n=1); check "Journal: gleicher Inhalt wiederverwendet" grep -q "_ka.py (unverändert" <<<"$o"
-check "Journal: keine zweite ka-Kopie" bash -c "[ \$(ls \"$BL_ROOT\"/test-kiste/v001_start/skripte/ | grep -c '_ka.py') -eq 1 ]"
+o=$("$BL" run "$BL_ROOT/kb.py" --set n=21 --set name=Tasse); check "Journal: letzte Datei, gleicher Inhalt und Werte → wiederverwendet" has "_kb.py \(unverändert"
+o=$("$BL" run "$BL_ROOT/ka.py" --set n=1); check "Journal: ka nach kb, andere Werte → neue Datei" hasnt "unverändert"
+check "Journal: zwei ka-Läufe, Werte daneben" bash -c "[ \$(command ls '$BL_ROOT'/test-kiste/v001_start/skripte/ | grep -c '_ka.py') -eq 2 ] && grep -q '\"n\": 1' '$BL_ROOT'/test-kiste/v001_start/skripte/*_ka.args.json"
+o=$("$BL" run "$BL_ROOT/ka.py" --set x=NaN 2>&1); check "--set NaN → klare Meldung" has "NaN/Infinity ist kein gültiger Wert"
 printf 'raise ValueError("kaputt")\n' > "$BL_ROOT/kf.py"
 printf 'bpy.app.driver_namespace["bl_kc"] = 1\n' > "$BL_ROOT/kc.py"
 o=$("$BL" run "$BL_ROOT/ka.py" "$BL_ROOT/kf.py" "$BL_ROOT/kc.py" 2>&1); rc=$?
@@ -45,10 +48,12 @@ o=$("$BL" look --section z=2000 --obj Kiste --size 300); img=$(grep -o '/[^ ]*\.
 check "A4 section: Bild" bash -c "grep -q schnitt-z2000 <<<'$o' && test -s '$img'"
 o=$("$BL" run -e 'from PIL import Image
 im=Image.open(r"'"$img"'").convert("RGB"); px=list(im.getdata())
-result={"rot": sum(1 for r,g,b in px if r-g>50 and r-b>50), "objs": sorted(o.name for o in bpy.data.objects), "mats": len(bpy.data.materials), "meshes": len(bpy.data.meshes)}')
+result={"rot": sum(1 for r,g,b in px if r-g>50 and r-b>50), "objs": sorted(o.name for o in bpy.data.objects), "schnitt_reste": [i.name for i in list(bpy.data.materials)+list(bpy.data.meshes)+list(bpy.data.cameras) if i.name.startswith("_bl")], "meshes": len(bpy.data.meshes)}')
 check "A4 section: rote Schnittfläche sichtbar" has '"rot": [0-9]{3,}'
-check "A4 section: räumt auf" has '"objs": \["Kiste"\]' '"meshes": 1'
-o=$("$BL" look --section q=1 2>&1); check "A4 section: falsche Achse → Fehler" bash -c "grep -q 'x=MM, y=MM oder z=MM' <<<\"$o\""
+check "A4 section: räumt auf (Objekte, Mesh, Material, Kamera)" has '"objs": \["Kiste"\]' '"schnitt_reste": \[\]' '"meshes": 1'
+o=$("$BL" run -e 'bpy.ops.object.empty_add(); bpy.context.object.name="Leer"' >/dev/null; "$BL" look --section z=0 --obj Leer 2>&1); check "A4 section ohne Mesh → klare Meldung" has "schneidet nur Meshes"
+"$BL" run -e 'bpy.data.objects.remove(obj("Leer"))' >/dev/null
+o=$("$BL" look --section q=1 2>&1); check "A4 section: falsche Achse → Fehler" has "x=MM, y=MM oder z=MM"
 printf 'x = 1\ny = obj("Gibtsnicht")\n' > "$BL_ROOT/fehler.py"
 o=$("$BL" run "$BL_ROOT/fehler.py" 2>&1); rc=$?
 check "Fehler → Exit 2" test $rc -eq 2
@@ -121,16 +126,22 @@ next(n for n in w.node_tree.nodes if n.type=="BACKGROUND").inputs["Strength"].de
 "$BL" save >/dev/null
 "$BL" run -e 'obj("Sonne").data.energy=0.2' >/dev/null
 o=$("$BL" look --mode cam --compare last --size 200 --samples 4)
-check "A1 cam-compare: Lichtänderung sichtbar (alter Stand mit altem Licht)" bash -c "grep -qE 'cam ([1-9][0-9]*\.[0-9]) %' <<<\"$o\" && ! grep -q 'kaum sichtbar' <<<\"$o\""
+check "A1 cam-compare: Lichtänderung sichtbar (alter Stand mit altem Licht)" has 'cam [1-9][0-9]*\.[0-9] %'; check "A1 keine Warnung" hasnt "kaum sichtbar"
 o=$("$BL" run -e 'result={"lights": sorted(o.name for o in bpy.context.scene.objects if o.type=="LIGHT"), "e": round(obj("Sonne").data.energy, 3), "scenes": len(bpy.data.scenes), "worlds": len(bpy.data.worlds), "welt_gesetzt": bpy.context.scene.world is not None and bpy.context.scene.world.library is None and not bpy.context.scene.world.name.endswith(".001")}')
 check "A1 cam-compare räumt auf (Licht, Welt, Szene)" has '"lights": \["Sonne"\], "e": 0.2, "scenes": 1, "worlds": 1, "welt_gesetzt": true'
-o=$("$BL" look --mode cam --engine cycles --samples 2 --size 160); check "C --engine cycles" bash -c "grep -q 'Bild' <<<\"$o\""
-o=$("$BL" run -e 'result={"engine": bpy.context.scene.render.engine}'); check "C Engine danach zurückgesetzt" bash -c "! grep -q CYCLES <<<\"$o\""
+o=$("$BL" run -e 'result={"vorher": [bpy.context.scene.render.engine, bpy.context.scene.eevee.taa_render_samples]}'); vorher=$(grep -o '"vorher": \[[^]]*\]' <<<"$o")
+o=$("$BL" look --mode cam --engine cycles --samples 2 --size 160); check "C --engine cycles rendert mit Cycles" has "Engine cycles \((OPTIX|CUDA|CPU)\)"
+o=$("$BL" run -e 'result={"vorher": [bpy.context.scene.render.engine, bpy.context.scene.eevee.taa_render_samples]}'); check "C Engine und Samples danach zurückgesetzt" grep -qF -- "$vorher" <<<"$o"
 o=$("$BL" look --engine cycles 2>&1); check "C --engine ohne cam → Fehler" grep -q "nur mit --mode cam" <<<"$o"
 # --- Phase 2 A7: bl open schaltet um, schützt ungespeicherte Änderungen
 pid1=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION/worker.json")
 o=$("$BL" open --leer 2>&1); rc=$?; check "A7 open bei Änderungen → Abbruch" bash -c "[ $rc -eq 2 ]"; check "A7 Meldung nennt ungespeicherte Änderungen" has "ungespeicherte Änderungen"
 check "A7 Worker läuft nach Abbruch weiter" bash -c "kill -0 $pid1"
+o=$("$BL" open "$BL_ROOT/gibtsnicht.blend" --verwerfen 2>&1); check "A7 falsches Ziel: Fehler" has "Datei fehlt"; check "A7 falsches Ziel: Worker bleibt" bash -c "kill -0 $pid1"
+"$BL" run -e 'def kaputt(): raise RuntimeError("x")
+bl.changed = kaputt' >/dev/null; "$BL" save >/dev/null
+o=$("$BL" open --leer 2>&1); rc=$?; check "A7 Zustand unbekannt → Abbruch" bash -c "[ $rc -eq 2 ]"; check "A7 Meldung: Zustand unbekannt" has "Zustand unbekannt"
+"$BL" run -e 'bl.changed = lambda: bl._changed' >/dev/null
 "$BL" save >/dev/null
 o=$("$BL" open --leer); check "A7 open schaltet nach save um" grep -q "Szene leer" <<<"$o"
 sleep 0.5; check "A7 alter Worker beendet" bash -c "! kill -0 $pid1 2>/dev/null"

@@ -85,19 +85,29 @@ def next_numbered(d: Path, stem: str, ext: str) -> Path:
     return d / "{:03d}_{}{}".format(n + 1, clean_label(stem), ext)
 
 
-def journal_file(d: Path, stem: str, src: str):
-    """Skript ins Journal d schreiben. Gleicht der Inhalt der letzten Datei NNN_<stem>.py, wird diese wiederverwendet.
-    → (pfad, neu_geschrieben)"""
+def journal_file(d: Path, stem: str, src: str, args: dict = None):
+    """Skript ins Journal d schreiben, --set-Werte als NNN_<stem>.args.json daneben.
+    Wiederverwendet wird nur die global letzte Journal-Datei, wenn Name, Inhalt und Werte gleich sind
+    (sonst fehlte beim Nachspielen ein Lauf). → (pfad, neu_geschrieben)"""
     src = src if src.endswith("\n") else src + "\n"
+    args = args or {}
     st = clean_label(stem)
     last = None
     if d.is_dir():
-        same = [f for f in d.iterdir() if re.match(r"^\d{3,}_" + re.escape(st) + r"\.py$", f.name)]
-        last = max(same, key=lambda f: int(f.name.split("_", 1)[0])) if same else None
+        nums = [(int(m.group(1)), f) for f in d.iterdir() for m in [re.match(r"^(\d{3,})_(.*)\.py$", f.name)] if m]
+        if nums:
+            n, f = max(nums, key=lambda t: t[0])
+            if f.name == "{:03d}_{}.py".format(n, st):
+                last = f
     if last is not None and last.read_text(encoding="utf-8") == src:
-        return last, False
+        side = last.with_name(last.stem + ".args.json")
+        old = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
+        if old == args:
+            return last, False
     j = next_numbered(d, stem, ".py")
     j.write_text(src, encoding="utf-8")
+    if args:
+        j.with_name(j.stem + ".args.json").write_text(json.dumps(args, ensure_ascii=False), encoding="utf-8")
     return j, True
 
 
@@ -109,9 +119,14 @@ def parse_set(items) -> dict:
         if not sep or not k.strip().isidentifier():
             raise ValueError("--set braucht name=wert, nicht {!r}".format(it))
         try:
-            out[k.strip()] = json.loads(v)
+            val = json.loads(v)
         except ValueError:
-            out[k.strip()] = v
+            val = v
+        try:
+            json.dumps(val, allow_nan=False)
+        except ValueError:
+            raise ValueError("--set {}: NaN/Infinity ist kein gültiger Wert".format(k))
+        out[k.strip()] = val
     return out
 
 

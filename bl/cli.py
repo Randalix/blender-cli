@@ -221,17 +221,20 @@ def call(code, timeout=600, prefer_file=None):
     return r
 
 
+def worker_changed(w):
+    """True/False: ungespeicherte Skriptläufe im Worker; None: unbekannt (rechnet noch, alte bllib, Fehler)."""
+    try:
+        resp = send(w["port"], "import bllib\nresult = {'changed': bllib.changed()}", 10)
+    except Fail:
+        return None
+    if resp.get("status") != "ok":
+        return None
+    v = (resp.get("result") or {}).get("changed")
+    return v if isinstance(v, bool) else None
+
+
 def cmd_open(a):
-    w = worker_info()
-    if w:
-        try:
-            changed = send(w["port"], "import bllib\nresult = {'changed': bllib.changed()}", 10).get("result", {}).get("changed")
-        except Fail:
-            changed = None
-        if changed and not a.verwerfen:
-            raise Fail("✗ offene Szene hat ungespeicherte Änderungen (Worker pid {}, Szene {}): erst `bl save`, "
-                       "oder `bl open … --verwerfen`".format(w["pid"], rel(w["blend"]) if w["blend"] else "leer"))
-        cmd_close(argparse.Namespace(save=False))
+    # Ziel zuerst prüfen: ein Tippfehler darf den laufenden Worker nicht beenden
     if a.leer:
         blend = None
     elif a.blend:
@@ -241,6 +244,14 @@ def cmd_open(a):
     else:
         pdir, vdir = active(need=False)
         blend = core.newest_blend(pdir, vdir) if pdir else None
+    w = worker_info()
+    if w:
+        changed = worker_changed(w)
+        if changed is not False and not a.verwerfen:
+            why = "hat ungespeicherte Änderungen" if changed else "antwortet nicht eindeutig (rechnet noch oder alte bllib), Zustand unbekannt"
+            raise Fail("✗ offene Szene {} (Worker pid {}, Szene {}): erst `bl save`, oder `bl open … --verwerfen`".format(
+                why, w["pid"], rel(w["blend"]) if w["blend"] else "leer"))
+        cmd_close(argparse.Namespace(save=False))
     start_worker(blend)
 
 
@@ -275,6 +286,8 @@ def cmd_run(a):
         args = core.parse_set(a.set)
     except ValueError as ex:
         raise Fail("✗ " + str(ex))
+    if a.name and len(a.scripts) > 1:
+        out("  Hinweis: --name gilt nur für ein Skript; die Kette nutzt die Dateinamen")
     if a.e is not None:
         jobs = [(a.e, a.name or "schritt")]
     else:
@@ -286,10 +299,11 @@ def cmd_run(a):
             jobs.append((f.read_text(encoding="utf-8"), a.name if (a.name and len(a.scripts) == 1) else f.stem))
     reported = []
     for i, (src, stem) in enumerate(jobs):
-        j, neu = core.journal_file(sk, stem, src)
+        j, neu = core.journal_file(sk, stem, src, args)
         t0 = time.time()
         try:
-            r = call("result = bllib.run_file({!r}, {!r})".format(str(j), args), timeout=a.timeout, prefer_file=str(j))
+            r = call("import json\nresult = bllib.run_file({!r}, json.loads({!r}))".format(str(j), json.dumps(args)),
+                     timeout=a.timeout, prefer_file=str(j))
         except Fail as ex:
             if len(jobs) > 1:
                 ex.args = (str(ex) + "\n  Kette abgebrochen bei Skript {}/{}; nicht ausgeführt: {}".format(
@@ -355,6 +369,8 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
                  str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius, section, engine, samples))
     out("✓ Bild {}  {}×{} px (≈{} Token)  1 px = {} mm".format(
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
+    if r.get("engine"):
+        out("  Engine {}".format(r["engine"]))
     if r.get("empty"):
         out("  ⚠ LEER: in {} ist nichts zu sehen. Ausschnitt verfehlt? --focus x,y,z ist in mm.".format("/".join(r["empty"])))
     if r.get("ground"):

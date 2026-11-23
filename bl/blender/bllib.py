@@ -15,6 +15,7 @@ import time
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
+from mathutils.kdtree import KDTree
 
 _quit = False
 _reports = []
@@ -50,10 +51,16 @@ def report(*objs):
             _reports.append(name)
 
 
+# kaputte Flächen (Fehler) und Warnungen aus mesh_stats; Schwellen wie qa_check (EL4CTEO blender-asset-qa), Weltraum
+BROKEN = ("winzig", "kurz", "splitter", "gefaltet")
+TINY_AREA, ZERO_EDGE, DUP_DIST = 1e-10, 1e-7, 1e-5
+
+
 def mesh_stats(o, manifold=True):
-    """Zahlen des ausgewerteten Netzes (nach Modifiern): v/e/f/tris, Maße, offene/nicht-mannigfaltige Kanten.
-    Fehler (kaputte Flächen): splitter (Ecke < 1°), winzig (Fläche ~0), gefaltet (Nachbarflächen > 170° geknickt).
-    ngons ist nur Info: N-Gons sind nicht automatisch ein Problem."""
+    """Zahlen des ausgewerteten Netzes (nach Modifiern, im Weltraum): v/e/f/tris, Maße, offene/nicht-mannigfaltige Kanten.
+    Fehler (kaputte Flächen): winzig (Fläche < 1e-10), kurz (Kante < 1e-7), splitter (Ecke < 1°),
+    gefaltet (Nachbarflächen > 170° geknickt). Warnung: doppelt (Vertex-Paare näher als 1e-5).
+    winzig/kurz/doppelt zählen genau wie qa_check. ngons ist nur Info: N-Gons sind nicht automatisch ein Problem."""
     dg = bpy.context.evaluated_depsgraph_get()
     oe = o.evaluated_get(dg)
     st = {"dims": [round(x, 4) for x in o.dimensions]}
@@ -66,16 +73,22 @@ def mesh_stats(o, manifold=True):
         if manifold and len(me.vertices) <= 2_000_000:
             bm = bmesh.new()
             bm.from_mesh(me)
+            bm.transform(o.matrix_world)  # Schwellen gelten im Weltraum (wie qa_check)
             st["nonmanifold"] = sum(1 for e in bm.edges if not e.is_manifold)
             st["loose_v"] = sum(1 for v in bm.verts if not v.link_edges)
             st["ngons"] = sum(1 for f in bm.faces if len(f.verts) > 4)
-            diag = Vector(o.dimensions).length or 1.0
-            tiny_a = (diag * 1e-5) ** 2
-            st["winzig"] = sum(1 for f in bm.faces if f.calc_area() < tiny_a)
-            st["splitter"] = sum(1 for f in bm.faces if f.calc_area() >= tiny_a and
+            st["winzig"] = sum(1 for f in bm.faces if f.calc_area() < TINY_AREA)
+            st["kurz"] = sum(1 for e in bm.edges if e.calc_length() < ZERO_EDGE)
+            st["splitter"] = sum(1 for f in bm.faces if f.calc_area() >= TINY_AREA and
+                                 all(e.calc_length() >= ZERO_EDGE for e in f.edges) and
                                  min(l.calc_angle() for l in f.loops) < math.radians(1.0))
             st["gefaltet"] = sum(1 for e in bm.edges if len(e.link_faces) == 2 and
                                  e.calc_face_angle(0.0) > math.radians(170))
+            kd = KDTree(len(bm.verts))
+            for v in bm.verts:
+                kd.insert(v.co, v.index)
+            kd.balance()
+            st["doppelt"] = sum(1 for v in bm.verts if len(kd.find_range(v.co, DUP_DIST)) > 1) // 2
             bm.free()
     finally:
         oe.to_mesh_clear()
@@ -95,9 +108,11 @@ def summary(o):
         parts.append(_fmt_dims(o.dimensions))
         if st.get("nonmanifold"):
             parts.append("offen/nm-Kanten {}".format(st["nonmanifold"]))
-        bad = ["{} {}".format(k, st[k]) for k in ("splitter", "winzig", "gefaltet") if st.get(k)]
+        bad = ["{} {}".format(k, st[k]) for k in BROKEN if st.get(k)]
         if bad:
             parts.append("FEHLER " + ", ".join(bad))
+        if st.get("doppelt"):
+            parts.append("Warnung doppelte Vertices {}".format(st["doppelt"]))
     mats = [s.material.name for s in getattr(o, "material_slots", []) if s.material]
     if mats:
         parts.append("mat " + ",".join(mats[:4]) + ("…" if len(mats) > 4 else ""))
@@ -225,10 +240,12 @@ def _info_obj(o):
         L.append("parent {}".format(o.parent.name))
     if o.type in GEOM_TYPES:
         st = mesh_stats(o)
-        L.append("ausgewertet: " + "  ".join(("{} {} (Info)" if k == "ngons" else "{} {}").format(k.replace("ngons", "N-Gons"), v) for k, v in st.items() if k != "dims" and not (k in ("splitter", "winzig", "gefaltet") and not v)))
-        bad = ["{} {}".format(k, st[k]) for k in ("splitter", "winzig", "gefaltet") if st.get(k)]
+        L.append("ausgewertet: " + "  ".join(("{} {} (Info)" if k == "ngons" else "{} {}").format(k.replace("ngons", "N-Gons"), v) for k, v in st.items() if k != "dims" and not (k in BROKEN + ("doppelt",) and not v)))
+        bad = ["{} {}".format(k, st[k]) for k in BROKEN if st.get(k)]
         if bad:
             L.append("FEHLER kaputte Flächen: " + ", ".join(bad) + " (Wireframe/Shading können hier Artefakte zeigen)")
+        if st.get("doppelt"):
+            L.append("Warnung doppelte Vertices: {} Paare näher als {} (Nähte im Shading; Merge by Distance)".format(st["doppelt"], DUP_DIST))
     for m in o.modifiers:
         L.append("mod " + _mod_desc(m))
     for s in getattr(o, "material_slots", []):
@@ -797,7 +814,7 @@ def _qa_module(qa_dir):
 
 
 # eigene Prüfungen → Schlüssel im qa_check-Profil (e = Fehler, w = Warnung, None = aus)
-_QA_OWN = {"winzig": "dg", "splitter": "dg", "gefaltet": "inc"}
+_QA_OWN = {"splitter": "dg", "gefaltet": "inc"}  # winzig/kurz/doppelt zählt qa_check selbst (gleiche Schwellen)
 
 
 def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None):

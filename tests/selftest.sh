@@ -108,6 +108,24 @@ check "mesh_stats: Splitter erkannt" grep -q '"splitter": 1' <<<"$o"
 check "summary: FEHLER bei Splitter" grep -q "Splitter  MESH .*FEHLER splitter 1" <<<"$o"
 check "N-Gon ist kein Fehler" bash -c "grep -q 'Sechseck  MESH' <<<\"$o\" && ! grep -q 'Sechseck.*FEHLER' <<<\"$o\""
 o=$("$BL" info --obj Sechseck); check "info: N-Gons als Info" grep -q "N-Gons 1 (Info)" <<<"$o"
+# kaputte Flächen wie qa_check: kleines Objekt (Diagonale 0,1 m), Fläche 2,5e-11 m², Kante 1e-8 m, ein doppelter Vertex
+o=$("$BL" run -e 'import bmesh
+me=bpy.data.meshes.new("K"); bm=bmesh.new()
+q=[bm.verts.new(p) for p in [(0,0,0),(0.05,0,0),(0.05,0.05,0),(0,0.05,0)]]; bm.faces.new(q)
+w=[bm.verts.new(p) for p in [(0.06,0,0),(0.060005,0,0),(0.060005,0.000005,0),(0.06,0.000005,0)]]; bm.faces.new(w)
+z=[bm.verts.new(p) for p in [(0.07,0,0),(0.07,1e-8,0),(0.08,0,0),(0.08,0.01,0)]]; bm.faces.new((z[0],z[2],z[3],z[1]))
+bm.verts.new((0,0,0)); d=[bm.verts.new(p) for p in [(0,0,0.01),(0.01,0,0.01)]]; bm.edges.new((d[0],d[1])); bm.edges.new((d[0],q[1]))
+bm.to_mesh(me); k=bpy.data.objects.new("Kaputt",me); bpy.context.scene.collection.objects.link(k); k.location=(40,0,0)
+report(k); result={"k": mesh_stats(k)}' --report)
+check "mesh_stats: winzig 2,5e-11 m² erkannt (alte Schwelle übersah sie)" has '"winzig": 1'
+check "mesh_stats: Kante 1e-8 m erkannt" has '"kurz": 1'
+check "mesh_stats: doppelter Vertex erkannt" has '"doppelt": 1'
+check "mesh_stats: Fläche mit Nullkante nicht zusätzlich Splitter" has '"splitter": 0'
+check "summary: FEHLER winzig/kurz, Warnung doppelt" has "Kaputt  MESH .*FEHLER winzig 1, kurz 1" "Warnung doppelte Vertices 1"
+o=$("$BL" info --obj Kaputt); check "info: FEHLER kaputte Flächen + Warnung doppelt" has "FEHLER kaputte Flächen: winzig 1, kurz 1" "Warnung doppelte Vertices: 1"
+o=$("$BL" qa --obj Kaputt --profile game 2>&1); check "qa: dieselben Zahlen wie mesh_stats" has "degenerate faces=1 zero-len edges=1" "duplicate verts=1"
+check "qa: winzig nicht doppelt gemeldet" hasnt "kaputte Flächen winzig"
+o=$("$BL" run -e 'bpy.data.objects.remove(obj("Kaputt"))' 2>&1)
 o=$("$BL" look --mode wire --obj Splitter --size 300); img=$(grep -o '/[^ ]*\.png' <<<"$o")
 o=$("$BL" run -e 'from PIL import Image
 im=Image.open(r"'"$img"'").convert("L"); w,h=im.width,im.height-40

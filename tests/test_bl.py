@@ -1,4 +1,4 @@
-"""Unit-Tests für bl/core.py (ohne Blender). Aufruf: <blender-python> -m unittest discover -s tests"""
+"""Unit tests for bl/core.py and bl/docs.py (no Blender). Run: <blender-python> -m unittest discover -s tests"""
 import json
 import os
 import sys
@@ -12,8 +12,8 @@ import core  # noqa: E402
 
 class CoreTest(unittest.TestCase):
     def test_clean_label(self):
-        self.assertEqual(core.clean_label("  Tür Griff v2!! "), "tuer-griff-v2")
-        self.assertEqual(core.clean_label("///"), "ohne-label")
+        self.assertEqual(core.clean_label("  Tür Griff v2!! "), "tuer-griff-v2")  # umlauts are transliterated
+        self.assertEqual(core.clean_label("///"), "no-label")
         self.assertEqual(len(core.clean_label("x" * 99)), 40)
         self.assertFalse(core.clean_label("a" * 39 + " b").endswith("-"))
 
@@ -29,15 +29,15 @@ class CoreTest(unittest.TestCase):
             for n in ("v001_a", "v010_b", "v002_c", "notes"):
                 (p / n).mkdir()
             self.assertEqual([v.name for v in core.versions(p)], ["v001_a", "v002_c", "v010_b"])
-            self.assertEqual(core.next_version_name(p, "Neu"), "v011_neu")
+            self.assertEqual(core.next_version_name(p, "New"), "v011_new")
 
     def test_next_numbered(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             self.assertEqual(core.next_numbered(p, "x", ".py").name, "001_x.py")
-            (p / "007_alt.py").write_text("")
+            (p / "007_old.py").write_text("")
             (p / "readme.txt").write_text("")
-            self.assertEqual(core.next_numbered(p, "Mein Skript", ".py").name, "008_mein-skript.py")
+            self.assertEqual(core.next_numbered(p, "My Script", ".py").name, "008_my-script.py")
 
     def test_newest_blend(self):
         with tempfile.TemporaryDirectory() as d:
@@ -52,46 +52,46 @@ class CoreTest(unittest.TestCase):
 
     def test_error_line(self):
         tb = ('Traceback (most recent call last):\n  File "<string>", line 2, in <module>\n'
-              '  File "/x/bllib.py", line 90, in run_file\n  File "/p/skripte/003_box.py", line 7, in <module>\n'
-              '  File "/x/bllib.py", line 30, in obj\nKeyError: "Objekt \'Kiste\' fehlt"')
-        self.assertEqual(core.error_line(tb, "/p/skripte/003_box.py"), '003_box.py:7: KeyError: "Objekt \'Kiste\' fehlt"')
+              '  File "/x/bllib.py", line 90, in run_file\n  File "/p/scripts/003_box.py", line 7, in <module>\n'
+              '  File "/x/bllib.py", line 30, in obj\nKeyError: "object \'Box\' missing"')
+        self.assertEqual(core.error_line(tb, "/p/scripts/003_box.py"), '003_box.py:7: KeyError: "object \'Box\' missing"')
         self.assertTrue(core.error_line(tb).startswith("bllib.py:30"))
         self.assertEqual(core.error_line("SyntaxError: x"), "SyntaxError: x")
 
     def test_journal_file(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
-            lauf = lambda n: json.loads((p / n).read_text())  # noqa: E731
-            j1, n1 = core.journal_file(p, "Körper", "a = 1")
-            self.assertEqual((j1.name, n1), ("001_koerper.py", True))
+            run = lambda n: json.loads((p / n).read_text())  # noqa: E731
+            j1, n1 = core.journal_file(p, "Body", "a = 1")
+            self.assertEqual((j1.name, n1), ("001_body.py", True))
             self.assertEqual(j1.read_text(), "a = 1\n")
-            self.assertEqual(lauf("001_koerper.lauf.json"), {"args": {}, "runs": 0, "failed": 0})
-            self.assertEqual(core.journal_count(j1, ok=False), 0)  # fehlgeschlagen zählt nicht als Lauf
-            j2, n2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt, letzte Datei → wiederverwendet
+            self.assertEqual(run("001_body.run.json"), {"args": {}, "runs": 0, "failed": 0})
+            self.assertEqual(core.journal_count(j1, ok=False), 0)  # a failed run does not count as a run
+            j2, n2 = core.journal_file(p, "Body", "a = 1\n")  # same content, last file → reused
             self.assertEqual((j2, n2), (j1, False))
             self.assertEqual(core.journal_count(j2), 1)
             self.assertEqual(core.journal_count(j2), 2)
-            self.assertEqual(lauf("001_koerper.lauf.json"), {"args": {}, "runs": 2, "failed": 1})
-            j3, n3 = core.journal_file(p, "henkel", "b = 2")
-            self.assertEqual((j3.name, n3), ("002_henkel.py", True))
-            j4, n4 = core.journal_file(p, "Körper", "a = 1")  # koerper → henkel → koerper: eigener Eintrag
-            self.assertEqual((j4.name, n4), ("003_koerper.py", True))
-            j5, n5 = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # andere Werte → neue Datei
-            self.assertEqual((j5.name, n5), ("004_koerper.py", True))
-            self.assertEqual(lauf("004_koerper.lauf.json")["args"], {"n": 3})
-            self.assertEqual(core.journal_file(p, "Körper", "a = 1", {"n": 3}), (j5, False))
-            j7, n7 = core.journal_file(p, "Körper", "a = 1", {"n": True})  # true ≠ 1
-            self.assertEqual((j7.name, n7), ("005_koerper.py", True))
-            (p / "005_koerper.lauf.json").write_text("{kaputt")  # kaputte Zähldatei → neue Datei statt Traceback
-            j8, n8 = core.journal_file(p, "Körper", "a = 1", {"n": True})
-            self.assertEqual((j8.name, n8), ("006_koerper.py", True))
+            self.assertEqual(run("001_body.run.json"), {"args": {}, "runs": 2, "failed": 1})
+            j3, n3 = core.journal_file(p, "handle", "b = 2")
+            self.assertEqual((j3.name, n3), ("002_handle.py", True))
+            j4, n4 = core.journal_file(p, "Body", "a = 1")  # body → handle → body: own entry
+            self.assertEqual((j4.name, n4), ("003_body.py", True))
+            j5, n5 = core.journal_file(p, "Body", "a = 1", {"n": 3})  # other values → new file
+            self.assertEqual((j5.name, n5), ("004_body.py", True))
+            self.assertEqual(run("004_body.run.json")["args"], {"n": 3})
+            self.assertEqual(core.journal_file(p, "Body", "a = 1", {"n": 3}), (j5, False))
+            j7, n7 = core.journal_file(p, "Body", "a = 1", {"n": True})  # true ≠ 1
+            self.assertEqual((j7.name, n7), ("005_body.py", True))
+            (p / "005_body.run.json").write_text("{broken")  # broken counter file → new file instead of a traceback
+            j8, n8 = core.journal_file(p, "Body", "a = 1", {"n": True})
+            self.assertEqual((j8.name, n8), ("006_body.py", True))
             self.assertEqual(core.journal_count(j7), 1)
 
     def test_parse_set(self):
-        self.assertEqual(core.parse_set(["n=3", "f=0.5", "l=[1,2]", "s=abc", "t=true", "leer="]),
-                         {"n": 3, "f": 0.5, "l": [1, 2], "s": "abc", "t": True, "leer": ""})
+        self.assertEqual(core.parse_set(["n=3", "f=0.5", "l=[1,2]", "s=abc", "t=true", "empty="]),
+                         {"n": 3, "f": 0.5, "l": [1, 2], "s": "abc", "t": True, "empty": ""})
         self.assertEqual(core.parse_set(None), {})
-        for bad in ("ohne", "1x=2", "=3", "x=NaN", "x=1e999", "x=[1,-Infinity]"):
+        for bad in ("noequals", "1x=2", "=3", "x=NaN", "x=1e999", "x=[1,-Infinity]"):
             with self.assertRaises(ValueError):
                 core.parse_set([bad])
 
@@ -103,13 +103,13 @@ class CoreTest(unittest.TestCase):
                 core.parse_section(bad)
 
     def test_clip(self):
-        self.assertEqual(core.clip_lines(range(5), 3), [0, 1, 2, "… +2 weitere Zeilen"])
+        self.assertEqual(core.clip_lines(range(5), 3), [0, 1, 2, "… +2 more lines"])
         self.assertEqual(core.clip_text("abcdef", 4), "abc…")
         self.assertEqual(core.image_tokens(768, 800), 819)
 
 
 class TestDocs(unittest.TestCase):
-    """bl docs: exakte Namen aus RST (ohne Blender, ohne echte Daten)."""
+    """bl docs: exact names from RST (no Blender, no real data)."""
 
     def setUp(self):
         import docs
@@ -134,35 +134,35 @@ class TestDocs(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_attribut(self):
+    def test_attribute(self):
         f, lines = self.docs.lookup("bpy.types.Object.matrix_world", self.api)
         self.assertEqual(f.name, "bpy.types.Object.rst")
         self.assertEqual(lines[0], ".. attribute:: matrix_world")
         self.assertIn("Worldspace transformation matrix", lines)
-        self.assertNotIn("mode", " ".join(lines))  # nächstes Mitglied gehört nicht dazu
+        self.assertNotIn("mode", " ".join(lines))  # the next member is not part of it
 
-    def test_ohne_praefix_und_methode(self):
+    def test_no_prefix_and_method(self):
         _f, lines = self.docs.lookup("Object.select_set", self.api)
         self.assertIn("select_set(state", lines[0])
 
-    def test_basisklasse(self):
+    def test_base_class(self):
         f, lines = self.docs.lookup("bpy.types.Object.name", self.api)
         self.assertEqual(f.name, "bpy.types.ID.rst")
         self.assertIn(":type: str", lines)
 
-    def test_klasse_kurz(self):
+    def test_class_short(self):
         _f, lines = self.docs.lookup("bpy.types.Object", self.api)
-        self.assertIn("Mitglieder (3): matrix_world, mode, select_set", lines)
+        self.assertIn("members (3): matrix_world, mode, select_set", lines)
 
-    def test_modul_funktion(self):
+    def test_module_function(self):
         _f, lines = self.docs.lookup("bmesh.ops.bevel", self.api)
         self.assertEqual(lines[0], ".. function:: bevel(bm, geom, offset)")
         self.assertNotIn("Split.", lines)
         _f, lines = self.docs.lookup("bmesh.ops", self.api)
         self.assertIn("bevel, bisect_edges", lines[-1])
 
-    def test_unbekannt(self):
-        self.assertIsNone(self.docs.lookup("bpy.types.Object.gibtsnicht", self.api))
+    def test_unknown(self):
+        self.assertIsNone(self.docs.lookup("bpy.types.Object.doesnotexist", self.api))
         self.assertIsNone(self.docs.lookup("bevel", self.api))
 
     def test_clean(self):

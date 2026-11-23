@@ -1,247 +1,247 @@
 #!/usr/bin/env bash
-# Selbsttest bl mit echtem Blender: Wegwerf-Ablage und eigene Sitzung, räumt hinterher auf.
+# bl selftest with real Blender: throwaway storage and its own session, cleans up afterwards.
 set -u
 here="$(cd "$(dirname "$0")/.." && pwd)"
 BL="$here/bin/bl"
 mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}"
-BL_ROOT="$(mktemp -d -p "${XDG_CACHE_HOME:-$HOME/.cache}" bl-selftest.XXXX)" || { echo "mktemp fehlgeschlagen"; exit 3; }
-[ -d "$BL_ROOT" ] || { echo "BL_ROOT fehlt"; exit 3; }
+BL_ROOT="$(mktemp -d -p "${XDG_CACHE_HOME:-$HOME/.cache}" bl-selftest.XXXX)" || { echo "mktemp failed"; exit 3; }
+[ -d "$BL_ROOT" ] || { echo "BL_ROOT missing"; exit 3; }
 export BL_ROOT BL_SESSION="selftest-$$"
 fail=0
 ok()   { echo "  ok   $*"; }
 bad()  { echo "  FAIL $*"; fail=1; }
 check(){ local d="$1"; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
-has(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" || return 1; done; }  # alle Muster in $o
-hasnt(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" && return 1; done; return 0; }  # keins der Muster in $o
-cleanup(){ "$BL" close --verwerfen >/dev/null 2>&1; BL_SESSION="$BL_SESSION-idle" "$BL" close --verwerfen >/dev/null 2>&1; rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION-idle"; rm -rf "$BL_ROOT" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION"; }
+has(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" || return 1; done; }  # all patterns in $o
+hasnt(){ local m; for m in "$@"; do grep -qE -- "$m" <<<"$o" && return 1; done; return 0; }  # none of the patterns in $o
+cleanup(){ "$BL" close --discard >/dev/null 2>&1; BL_SESSION="$BL_SESSION-idle" "$BL" close --discard >/dev/null 2>&1; rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION-idle"; rm -rf "$BL_ROOT" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION"; }
 trap cleanup EXIT
 
 echo "== bl selftest (BL_ROOT=$BL_ROOT)"
-o=$("$BL" projekt "Test Kiste"); check "projekt legt v001_start an" grep -q "v001_start" <<<"$o"
-o=$("$BL" open); check "open leere Szene" grep -q "Szene leer" <<<"$o"
+o=$("$BL" project "Test Box"); check "project creates v001_start" grep -q "v001_start" <<<"$o"
+o=$("$BL" open); check "open empty scene" grep -q "scene empty" <<<"$o"
 pid=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION/worker.json")
-o=$("$BL" info); check "info: leere Szene" grep -q "Objekte 0" <<<"$o"
-o=$("$BL" run -e 'bpy.ops.mesh.primitive_cube_add(size=1); k=bpy.context.object; k.name="Kiste"
-m=k.modifiers.new("Bevel","BEVEL"); m.width=0.05; m.segments=3; report(k); result={"faces": mesh_stats(k)["f"]}' --name kiste --report)
+o=$("$BL" info); check "info: empty scene" grep -q "objects 0" <<<"$o"
+o=$("$BL" run -e 'bpy.ops.mesh.primitive_cube_add(size=1); k=bpy.context.object; k.name="Box"
+m=k.modifiers.new("Bevel","BEVEL"); m.width=0.05; m.segments=3; report(k); result={"faces": mesh_stats(k)["f"]}' --name box --report)
 check "run -e: result" grep -q '"faces": 98' <<<"$o"
-check "run --report: Zeile" grep -q "Kiste  MESH  v .* f 98" <<<"$o"
-check "Skript protokolliert" test -f "$BL_ROOT/test-kiste/v001_start/skripte/001_kiste.py"
-o=$("$BL" run -e 'k=obj("Kiste"); k.location.z=2; print("z", k.location.z)'); check "Szene bleibt offen" grep -q "| z 2.0" <<<"$o"
-# --- Phase 2 A2/A3: Kette, --set, Journal ohne identische Kopien
+check "run --report: line" grep -q "Box  MESH  v .* f 98" <<<"$o"
+check "script journaled" test -f "$BL_ROOT/test-box/v001_start/scripts/001_box.py"
+o=$("$BL" run -e 'k=obj("Box"); k.location.z=2; print("z", k.location.z)'); check "scene stays open" grep -q "| z 2.0" <<<"$o"
+# --- chain, --set, journal without identical copies
 printf 'result = {"a": args.get("n", 0) * 2}\n' > "$BL_ROOT/ka.py"
 printf 'bpy.app.driver_namespace["bl_kb"] = args.get("name", "-"); result = {"b": args.get("name", "-")}\n' > "$BL_ROOT/kb.py"
-o=$("$BL" run "$BL_ROOT/ka.py" "$BL_ROOT/kb.py" --set n=21 --set name=Tasse)
-check "run Kette: beide Skripte, --set" has '"a": 42' '"b": "Tasse"'
-o=$("$BL" run "$BL_ROOT/kb.py" --set n=21 --set name=Tasse 2>&1); check "Journal: letzte Datei gleich → wiederverwendet, Lauf 2" has "_kb.py \(unverändert, Lauf 2\)"
-check "Journal: Laufzahl in kb.lauf.json" grep -q '"runs": 2' "$BL_ROOT"/test-kiste/v001_start/skripte/*_kb.lauf.json
-o=$("$BL" run "$BL_ROOT/ka.py" --set n=1 2>&1); rc=$?; check "Journal: ka nach kb, andere Werte → neue Datei" bash -c "[ $rc -eq 0 ]"; check "Journal: neue Datei gemeldet" hasnt "unverändert"
-check "Journal: zwei ka-Läufe, Werte daneben" bash -c "[ \$(command ls '$BL_ROOT'/test-kiste/v001_start/skripte/ | grep -c '_ka.py') -eq 2 ] && grep -q '\"n\": 1' '$BL_ROOT'/test-kiste/v001_start/skripte/*_ka.lauf.json"
-o=$("$BL" run "$BL_ROOT/ka.py" --set x=NaN 2>&1); check "--set NaN → klare Meldung" has "NaN/Infinity ist kein gültiger Wert"
-printf 'raise ValueError("kaputt")\n' > "$BL_ROOT/kf.py"
+o=$("$BL" run "$BL_ROOT/ka.py" "$BL_ROOT/kb.py" --set n=21 --set name=Mug)
+check "run chain: both scripts, --set" has '"a": 42' '"b": "Mug"'
+o=$("$BL" run "$BL_ROOT/kb.py" --set n=21 --set name=Mug 2>&1); check "journal: last file identical → reused, run 2" has "_kb.py \(unchanged, run 2\)"
+check "journal: run count in kb.run.json" grep -q '"runs": 2' "$BL_ROOT"/test-box/v001_start/scripts/*_kb.run.json
+o=$("$BL" run "$BL_ROOT/ka.py" --set n=1 2>&1); rc=$?; check "journal: ka after kb, other values → new file" bash -c "[ $rc -eq 0 ]"; check "journal: new file reported" hasnt "unchanged"
+check "journal: two ka runs, values next to them" bash -c "[ \$(command ls '$BL_ROOT'/test-box/v001_start/scripts/ | grep -c '_ka.py') -eq 2 ] && grep -q '\"n\": 1' '$BL_ROOT'/test-box/v001_start/scripts/*_ka.run.json"
+o=$("$BL" run "$BL_ROOT/ka.py" --set x=NaN 2>&1); check "--set NaN → clear message" has "NaN/Infinity is not a valid value"
+printf 'raise ValueError("broken")\n' > "$BL_ROOT/kf.py"
 printf 'bpy.app.driver_namespace["bl_kc"] = 1\n' > "$BL_ROOT/kc.py"
 o=$("$BL" run "$BL_ROOT/ka.py" "$BL_ROOT/kf.py" "$BL_ROOT/kc.py" 2>&1); rc=$?
-check "Kette: Fehler → Exit 2" bash -c "[ $rc -eq 2 ]"; check "Kette: Abbruch gemeldet" has "Kette abgebrochen bei Skript 2/3; nicht ausgeführt: kc"
-o=$("$BL" run -e 'result={"kc": "bl_kc" in bpy.app.driver_namespace}'); check "Kette: Skript nach Fehler nicht gelaufen" grep -q '"kc": false' <<<"$o"
+check "chain: error → exit 2" bash -c "[ $rc -eq 2 ]"; check "chain: abort reported" has "chain aborted at script 2/3; not run: kc"
+o=$("$BL" run -e 'result={"kc": "bl_kc" in bpy.app.driver_namespace}'); check "chain: script after error did not run" grep -q '"kc": false' <<<"$o"
 o=$("$BL" run -e 'result={"h": bl.hits((0, 0, 5000), (0, 0, -1)), "sb": list(bl._scale_bar(0.4, 768))}')
-check "A6 bl.hits: Ober- und Unterseite der Kiste (mm)" grep -q '"h": \[\[0.0, 0.0, 2500.0\], \[0.0, 0.0, 1500.0\]\]' <<<"$o"
-check "A5 Maßstabsbalken 0,4 mm/px × 768 → 50 mm, 125 px" grep -q '"sb": \[50, 125\]' <<<"$o"
-o=$("$BL" look --section z=2000 --obj Kiste --size 300); img=$(grep -o '/[^ ]*\.png' <<<"$o")
-check "A4 section: Bild" bash -c "grep -q schnitt-z2000 <<<'$o' && test -s '$img'"
+check "bl.hits: top and bottom of the box (mm)" grep -q '"h": \[\[0.0, 0.0, 2500.0\], \[0.0, 0.0, 1500.0\]\]' <<<"$o"
+check "scale bar 0.4 mm/px × 768 → 50 mm, 125 px" grep -q '"sb": \[50, 125\]' <<<"$o"
+o=$("$BL" look --section z=2000 --obj Box --size 300); img=$(grep -o '/[^ ]*\.png' <<<"$o")
+check "section: image" bash -c "grep -q section-z2000 <<<'$o' && test -s '$img'"
 o=$("$BL" run -e 'from PIL import Image
 im=Image.open(r"'"$img"'").convert("RGB"); px=list(im.getdata())
-result={"rot": sum(1 for r,g,b in px if r-g>50 and r-b>50), "objs": sorted(o.name for o in bpy.data.objects), "schnitt_reste": [i.name for i in list(bpy.data.materials)+list(bpy.data.meshes)+list(bpy.data.cameras) if i.name.startswith("_bl")], "meshes": len(bpy.data.meshes)}')
-check "A4 section: rote Schnittfläche sichtbar" has '"rot": [0-9]{3,}'
-check "A4 section: räumt auf (Objekte, Mesh, Material, Kamera)" has '"objs": \["Kiste"\]' '"schnitt_reste": \[\]' '"meshes": 1'
-o=$("$BL" run -e 'bpy.ops.object.empty_add(); bpy.context.object.name="Leer"' >/dev/null; "$BL" look --section z=0 --obj Leer 2>&1); check "A4 section ohne Mesh → klare Meldung" has "schneidet nur Meshes"
-"$BL" run -e 'bpy.data.objects.remove(obj("Leer"))' >/dev/null
-o=$("$BL" look --section q=1 2>&1); check "A4 section: falsche Achse → Fehler" has "x=MM, y=MM oder z=MM"
-printf 'x = 1\ny = obj("Gibtsnicht")\n' > "$BL_ROOT/fehler.py"
-o=$("$BL" run "$BL_ROOT/fehler.py" 2>&1); rc=$?
-check "Fehler → Exit 2" test $rc -eq 2
-check "Fehlerskript protokolliert" bash -c "ls \"$BL_ROOT\"/test-kiste/v001_start/skripte/ | grep -q _fehler.py"
-check "Fehlerzeile mit Datei:Zeile" grep -q "fehler.py:2: KeyError" <<<"$o"
-o=$("$BL" info --obj Kiste); check "info --obj: Bevel" grep -q "mod Bevel (bevel) width=0.05 segments=3" <<<"$o"
+result={"red": sum(1 for r,g,b in px if r-g>50 and r-b>50), "objs": sorted(o.name for o in bpy.data.objects), "section_leftovers": [i.name for i in list(bpy.data.materials)+list(bpy.data.meshes)+list(bpy.data.cameras) if i.name.startswith("_bl")], "meshes": len(bpy.data.meshes)}')
+check "section: red cut face visible" has '"red": [0-9]{3,}'
+check "section: cleans up (objects, mesh, material, camera)" has '"objs": \["Box"\]' '"section_leftovers": \[\]' '"meshes": 1'
+o=$("$BL" run -e 'bpy.ops.object.empty_add(); bpy.context.object.name="Empty"' >/dev/null; "$BL" look --section z=0 --obj Empty 2>&1); check "section without mesh → clear message" has "cuts meshes only"
+"$BL" run -e 'bpy.data.objects.remove(obj("Empty"))' >/dev/null
+o=$("$BL" look --section q=1 2>&1); check "section: wrong axis → error" has "x=MM, y=MM or z=MM"
+printf 'x = 1\ny = obj("DoesNotExist")\n' > "$BL_ROOT/error.py"
+o=$("$BL" run "$BL_ROOT/error.py" 2>&1); rc=$?
+check "error → exit 2" test $rc -eq 2
+check "failing script journaled" bash -c "ls \"$BL_ROOT\"/test-box/v001_start/scripts/ | grep -q _error.py"
+check "error line with file:line" grep -q "error.py:2: KeyError" <<<"$o"
+o=$("$BL" info --obj Box); check "info --obj: bevel" grep -q "mod Bevel (bevel) width=0.05 segments=3" <<<"$o"
 o=$("$BL" look --sheet --size 512); check "look --sheet" grep -q "512×552 px" <<<"$o"
-img=$(grep -o '/[^ ]*\.png' <<<"$o"); check "Bild existiert" test -s "$img"
-o=$("$BL" look --mode wire --obj Kiste --size 400); check "look wire" grep -q "400×440 px" <<<"$o"
-o=$("$BL" run -e 'result={"objs": sorted(o.name for o in bpy.data.objects)}'); check "look räumt auf (keine _bl_-Objekte)" grep -q '"objs": \["Kiste"\]' <<<"$o"
-o=$("$BL" run -e 'bpy.ops.mesh.primitive_cube_add(size=0.2, location=(1.5,0,0.5)); bpy.context.object.name="Marke"
+img=$(grep -o '/[^ ]*\.png' <<<"$o"); check "image exists" test -s "$img"
+o=$("$BL" look --mode wire --obj Box --size 400); check "look wire" grep -q "400×440 px" <<<"$o"
+o=$("$BL" run -e 'result={"objs": sorted(o.name for o in bpy.data.objects)}'); check "look cleans up (no _bl_ objects)" grep -q '"objs": \["Box"\]' <<<"$o"
+o=$("$BL" run -e 'bpy.ops.mesh.primitive_cube_add(size=0.2, location=(1.5,0,0.5)); bpy.context.object.name="Marker"
 from PIL import Image
-def seite(v):
+def side(v):
     r=bl.look(r"'"$BL_ROOT"'/o_"+v+".png", views=[v], panel=200); im=Image.open(r["path"]).convert("L")
     xs=[x for x in range(200) for y in range(0,200,4) if im.getpixel((x,y))<200]
     return sum(xs)/len(xs) > 100
-result={"top_wie_front": seite("top")==seite("front"), "bottom_wie_front": seite("bottom")==seite("front")}
-bpy.data.objects.remove(obj("Marke"))'); check "top/bottom: +X auf derselben Seite wie front" grep -q '"top_wie_front": true, "bottom_wie_front": true' <<<"$o"
-o=$("$BL" save); check "save" grep -q "v001_start/blend/test-kiste.blend" <<<"$o"
-o=$("$BL" version "Zweiter Stand"); check "version speichert Startstand" grep -q "v002_zweiter-stand/blend/test-kiste_start.blend" <<<"$o"
-o=$("$BL" close); check "close" grep -q "Worker beendet" <<<"$o"
-sleep 0.5; check "kein Prozess übrig" bash -c "! kill -0 $pid 2>/dev/null"
-o=$("$BL" info); check "Auto-Open lädt neueste Datei" grep -q "v002_zweiter-stand/blend/test-kiste_start.blend" <<<"$o"
-check "Kiste nach Neustart da, z=2" bash -c "\"$BL\" info --obj Kiste | grep -q 'loc (0.0, 0.0, 2.0)'"
-o=$("$BL" look --compare --size 400); check "compare ohne Änderung: 0 %" grep -q "iso 0.0 %" <<<"$o"
-check "compare ohne Änderung: Warnung" grep -q "kaum sichtbare Änderung" <<<"$o"
-"$BL" run -e 'obj("Kiste").scale.x = 1.6' >/dev/null
-o=$("$BL" look --compare --view iso --view top --size 400); check "compare nach Änderung: Bild 2×200+4 breit" grep -q "404×" <<<"$o"
-check "compare nach Änderung: >1 %, keine Warnung" bash -c "grep -qE 'iso [1-9][0-9]*\.[0-9] %' <<<\"$o\" && ! grep -q 'kaum sichtbar' <<<\"$o\""
-o=$("$BL" run -e 'result={"objs": sorted(o.name for o in bpy.data.objects), "meshes": len(bpy.data.meshes)}'); check "compare räumt auf" grep -q '"objs": \["Kiste"\], "meshes": 1' <<<"$o"
-o=$("$BL" look --mode wire --compare --size 400); check "compare wire" grep -q "Vergleich mit" <<<"$o"
-"$BL" save >/dev/null; o=$("$BL" look --compare --size 400); check "compare nach save nutzt Startstand" bash -c "grep -q 'test-kiste_start.blend' <<<\"$o\" && ! grep -q 'kaum sichtbar' <<<\"$o\""
-o=$("$BL" look --compare "$BL_ROOT/test-kiste/v002_zweiter-stand/blend/test-kiste.blend" --size 400); check "compare gegen gespeicherten Stand: 0 %" grep -q "iso 0.0 %" <<<"$o"
-o=$("$BL" look --focus Kiste --radius 100 --size 400); check "focus: feinerer Maßstab" bash -c "grep -qE '1 px = 0\.[0-9]+ mm' <<<\"$o\""
-o=$("$BL" look --focus 0,0,2000 --size 400 2>&1); rc=$?; check "focus Punkt ohne radius → Fehler" bash -c "[ $rc -eq 2 ] && grep -q 'braucht --radius' <<<\"$o\""
-o=$("$BL" look --focus 500,500,2500 --radius 200 --compare --size 400); check "focus in mm + compare" bash -c "grep -q 'Vergleich mit' <<<\"$o\" && ! grep -q LEER <<<\"$o\""
-o=$("$BL" look --focus 0.5,0.5,2.5 --radius 50 --size 400); check "focus daneben → Warnung LEER" grep -q "LEER" <<<"$o"
-o=$("$BL" look --compare last --size 400); check "compare last: gegen bl-save-Stand 0 %" grep -q "iso 0.0 %" <<<"$o"
-o=$("$BL" look --compare start --size 400); check "compare start" grep -q "test-kiste_start.blend" <<<"$o"
-o=$("$BL" look --obj Kiste --compare --size 400 2>&1); check "compare mit --obj" grep -q "Vergleich mit" <<<"$o"
+result={"top_like_front": side("top")==side("front"), "bottom_like_front": side("bottom")==side("front")}
+bpy.data.objects.remove(obj("Marker"))'); check "top/bottom: +X on the same side as front" grep -q '"top_like_front": true, "bottom_like_front": true' <<<"$o"
+o=$("$BL" save); check "save" grep -q "v001_start/blend/test-box.blend" <<<"$o"
+o=$("$BL" version "Second State"); check "version saves the start state" grep -q "v002_second-state/blend/test-box_start.blend" <<<"$o"
+o=$("$BL" close); check "close" grep -q "worker stopped" <<<"$o"
+sleep 0.5; check "no process left" bash -c "! kill -0 $pid 2>/dev/null"
+o=$("$BL" info); check "auto-open loads the newest file" grep -q "v002_second-state/blend/test-box_start.blend" <<<"$o"
+check "box there after restart, z=2" bash -c "\"$BL\" info --obj Box | grep -q 'loc (0.0, 0.0, 2.0)'"
+o=$("$BL" look --compare --size 400); check "compare without change: 0 %" grep -q "iso 0.0 %" <<<"$o"
+check "compare without change: warning" grep -q "barely visible change" <<<"$o"
+"$BL" run -e 'obj("Box").scale.x = 1.6' >/dev/null
+o=$("$BL" look --compare --view iso --view top --size 400); check "compare after change: image 2×200+4 wide" grep -q "404×" <<<"$o"
+check "compare after change: >1 %, no warning" bash -c "grep -qE 'iso [1-9][0-9]*\.[0-9] %' <<<\"$o\" && ! grep -q 'barely visible' <<<\"$o\""
+o=$("$BL" run -e 'result={"objs": sorted(o.name for o in bpy.data.objects), "meshes": len(bpy.data.meshes)}'); check "compare cleans up" grep -q '"objs": \["Box"\], "meshes": 1' <<<"$o"
+o=$("$BL" look --mode wire --compare --size 400); check "compare wire" grep -q "compared with" <<<"$o"
+"$BL" save >/dev/null; o=$("$BL" look --compare --size 400); check "compare after save uses the start state" bash -c "grep -q 'test-box_start.blend' <<<\"$o\" && ! grep -q 'barely visible' <<<\"$o\""
+o=$("$BL" look --compare "$BL_ROOT/test-box/v002_second-state/blend/test-box.blend" --size 400); check "compare against saved state: 0 %" grep -q "iso 0.0 %" <<<"$o"
+o=$("$BL" look --focus Box --radius 100 --size 400); check "focus: finer scale" bash -c "grep -qE '1 px = 0\.[0-9]+ mm' <<<\"$o\""
+o=$("$BL" look --focus 0,0,2000 --size 400 2>&1); rc=$?; check "focus point without radius → error" bash -c "[ $rc -eq 2 ] && grep -q 'needs --radius' <<<\"$o\""
+o=$("$BL" look --focus 500,500,2500 --radius 200 --compare --size 400); check "focus in mm + compare" bash -c "grep -q 'compared with' <<<\"$o\" && ! grep -q EMPTY <<<\"$o\""
+o=$("$BL" look --focus 0.5,0.5,2.5 --radius 50 --size 400); check "focus missed → warning EMPTY" grep -q "EMPTY" <<<"$o"
+o=$("$BL" look --compare last --size 400); check "compare last: against bl save state 0 %" grep -q "iso 0.0 %" <<<"$o"
+o=$("$BL" look --compare start --size 400); check "compare start" grep -q "test-box_start.blend" <<<"$o"
+o=$("$BL" look --obj Box --compare --size 400 2>&1); check "compare with --obj" grep -q "compared with" <<<"$o"
 o=$("$BL" run -e 'import bmesh
 me=bpy.data.meshes.new("S"); bm=bmesh.new()
 v=[bm.verts.new(p) for p in [(0,0,0),(1,0,0),(1,1,0),(0,1,0),(0.5,-0.00001,0),(0.5,1.5,0)]]
 bm.faces.new((v[0],v[3],v[2],v[1])); bm.faces.new((v[0],v[1],v[4])); bm.to_mesh(me)
-s=bpy.data.objects.new("Splitter",me); bpy.context.scene.collection.objects.link(s); s.location=(5,0,0)
+s=bpy.data.objects.new("Sliver",me); bpy.context.scene.collection.objects.link(s); s.location=(5,0,0)
 me2=bpy.data.meshes.new("N"); bm2=bmesh.new(); import math
 vs=[bm2.verts.new((math.cos(i/6*math.tau), math.sin(i/6*math.tau), 0)) for i in range(6)]; bm2.faces.new(vs); bm2.to_mesh(me2)
-n=bpy.data.objects.new("Sechseck",me2); bpy.context.scene.collection.objects.link(n); n.location=(8,0,0)
+n=bpy.data.objects.new("Hexagon",me2); bpy.context.scene.collection.objects.link(n); n.location=(8,0,0)
 report(s, n); result={"s": mesh_stats(s), "n": mesh_stats(n)}' --report)
-check "mesh_stats: Splitter erkannt" grep -q '"splitter": 1' <<<"$o"
-check "summary: FEHLER bei Splitter" grep -q "Splitter  MESH .*FEHLER splitter 1" <<<"$o"
-check "N-Gon ist kein Fehler" bash -c "grep -q 'Sechseck  MESH' <<<\"$o\" && ! grep -q 'Sechseck.*FEHLER' <<<\"$o\""
-o=$("$BL" info --obj Sechseck); check "info: N-Gons als Info" grep -q "N-Gons 1 (Info)" <<<"$o"
-# kaputte Flächen wie qa_check: kleines Objekt (Diagonale 0,1 m), flaches Dreieck 5e-11 m² (alte Schwelle 1e-12 übersah es),
-# Kante 1e-8 m (zugleich ein doppeltes Paar), ein loser doppelter Vertex → doppelt 2
+check "mesh_stats: sliver detected" grep -q '"slivers": 1' <<<"$o"
+check "summary: ERROR on sliver" grep -q "Sliver  MESH .*ERROR slivers 1" <<<"$o"
+check "n-gon is not an error" bash -c "grep -q 'Hexagon  MESH' <<<\"$o\" && ! grep -q 'Hexagon.*ERROR' <<<\"$o\""
+o=$("$BL" info --obj Hexagon); check "info: n-gons as info" grep -q "n-gons 1 (info)" <<<"$o"
+# broken faces like qa_check: small object (diagonal 0.1 m), flat triangle 5e-11 m² (the old threshold 1e-12 missed it),
+# edge 1e-8 m (also a duplicate pair), one loose duplicate vertex → duplicates 2
 o=$("$BL" run -e 'import bmesh
 me=bpy.data.meshes.new("K"); bm=bmesh.new()
 q=[bm.verts.new(p) for p in [(0,0,0),(0.05,0,0),(0.05,0.05,0),(0,0.05,0)]]; bm.faces.new(q)
 w=[bm.verts.new(p) for p in [(0.06,0,0),(0.07,0,0),(0.065,1e-8,0)]]; bm.faces.new(w)
 z=[bm.verts.new(p) for p in [(0.08,0,0),(0.08,1e-8,0),(0.09,0,0),(0.09,0.01,0)]]; bm.faces.new((z[0],z[2],z[3],z[1]))
 bm.verts.new((0,0,0))
-bm.to_mesh(me); k=bpy.data.objects.new("Kaputt",me); bpy.context.scene.collection.objects.link(k); k.location=(40,0,0)
+bm.to_mesh(me); k=bpy.data.objects.new("Broken",me); bpy.context.scene.collection.objects.link(k); k.location=(40,0,0)
 report(k); result={"k": mesh_stats(k)}' --report)
-check "mesh_stats: winzig 5e-11 m² erkannt (alte Schwelle übersah es)" has '"winzig": 1'
-check "mesh_stats: Kante 1e-8 m erkannt" has '"kurz": 1'
-check "mesh_stats: doppelte Vertices erkannt" has '"doppelt": 2'
-check "mesh_stats: Fläche mit Nullkante nicht zusätzlich Splitter" has '"splitter": 0'
-check "summary: FEHLER winzig/kurz, Warnung doppelt" has "Kaputt  MESH .*FEHLER winzig 1, kurz 1" "Warnung doppelte Vertices 2"
-o=$("$BL" info --obj Kaputt); check "info: FEHLER kaputte Flächen + Warnung doppelt" has "FEHLER kaputte Flächen: winzig 1, kurz 1" "Warnung doppelte Vertices: 2"
-o=$("$BL" qa --obj Kaputt --profile game 2>&1); check "qa: dieselben Zahlen wie mesh_stats" has "degenerate faces=1 zero-len edges=1" "duplicate verts=2"
-check "qa: winzig nicht doppelt gemeldet" hasnt "kaputte Flächen winzig"
-o=$("$BL" run -e 'bpy.data.objects.remove(obj("Kaputt"))' 2>&1)
-o=$("$BL" look --mode wire --obj Splitter --size 300); img=$(grep -o '/[^ ]*\.png' <<<"$o")
+check "mesh_stats: tiny 5e-11 m² detected (old threshold missed it)" has '"tiny": 1'
+check "mesh_stats: edge 1e-8 m detected" has '"zero_edges": 1'
+check "mesh_stats: duplicate vertices detected" has '"duplicates": 2'
+check "mesh_stats: face with zero edge not also a sliver" has '"slivers": 0'
+check "summary: ERROR tiny/zero_edges, warning duplicates" has "Broken  MESH .*ERROR tiny 1, zero_edges 1" "warning duplicate vertices 2"
+o=$("$BL" info --obj Broken); check "info: ERROR broken faces + warning duplicates" has "ERROR broken faces: tiny 1, zero_edges 1" "warning duplicate vertices: 2"
+o=$("$BL" qa --obj Broken --profile game 2>&1); check "qa: same numbers as mesh_stats" has "degenerate faces=1 zero-len edges=1" "duplicate verts=2"
+check "qa: tiny not reported twice" hasnt "broken faces tiny"
+o=$("$BL" run -e 'bpy.data.objects.remove(obj("Broken"))' 2>&1)
+o=$("$BL" look --mode wire --obj Sliver --size 300); img=$(grep -o '/[^ ]*\.png' <<<"$o")
 o=$("$BL" run -e 'from PIL import Image
 im=Image.open(r"'"$img"'").convert("L"); w,h=im.width,im.height-40
-rand=[im.getpixel((x,y)) for x in range(w) for y in range(h) if (x<10 or x>w-10 or y<10 or y>h-10) and not (x<120 and y<30) and not (x>w-160 and y>h-40)]
-result={"dunkel_am_rand": sum(1 for p in rand if p<120)}')
-check "wire: keine Strahlen am Splitter" grep -q '"dunkel_am_rand": 0' <<<"$o"
-"$BL" run -e 'bpy.data.objects.remove(obj("Splitter")); bpy.data.objects.remove(obj("Sechseck"))' >/dev/null
-"$BL" run -e 'bpy.ops.mesh.primitive_plane_add(size=50); bpy.context.object.name="Boden"' >/dev/null
-o=$("$BL" look --size 400); check "Boden aus Rahmung genommen" grep -q "Boden nicht gerahmt" <<<"$o"
-check "Maßstab bleibt fein (< 10 mm/px)" bash -c "grep -qE '1 px = [0-9]\.[0-9]+ mm' <<<\"$o\""
-# --- Phase 2 A1/C: Kamera-Vergleich mit Licht des alten Stands, Engine-Wahl
-"$BL" run -e 'c=bpy.data.objects.new("Kam", bpy.data.cameras.new("Kam")); bpy.context.scene.collection.objects.link(c)
+rim=[im.getpixel((x,y)) for x in range(w) for y in range(h) if (x<10 or x>w-10 or y<10 or y>h-10) and not (x<120 and y<30) and not (x>w-160 and y>h-40)]
+result={"dark_at_rim": sum(1 for p in rim if p<120)}')
+check "wire: no spikes at the sliver" grep -q '"dark_at_rim": 0' <<<"$o"
+"$BL" run -e 'bpy.data.objects.remove(obj("Sliver")); bpy.data.objects.remove(obj("Hexagon"))' >/dev/null
+"$BL" run -e 'bpy.ops.mesh.primitive_plane_add(size=50); bpy.context.object.name="Ground"' >/dev/null
+o=$("$BL" look --size 400); check "ground excluded from framing" grep -q "ground not framed" <<<"$o"
+check "scale stays fine (< 10 mm/px)" bash -c "grep -qE '1 px = [0-9]\.[0-9]+ mm' <<<\"$o\""
+# --- camera comparison with the lights of the old state, engine choice
+"$BL" run -e 'c=bpy.data.objects.new("Cam", bpy.data.cameras.new("Cam")); bpy.context.scene.collection.objects.link(c)
 c.location=(0,-8,4); c.rotation_euler=(math.radians(65),0,0); bpy.context.scene.camera=c
-L=bpy.data.objects.new("Sonne", bpy.data.lights.new("Sonne","SUN")); bpy.context.scene.collection.objects.link(L); L.data.energy=5
+L=bpy.data.objects.new("Sun", bpy.data.lights.new("Sun","SUN")); bpy.context.scene.collection.objects.link(L); L.data.energy=5
 w=bpy.context.scene.world or bpy.data.worlds.new("W"); bpy.context.scene.world=w; w.use_nodes=True
 next(n for n in w.node_tree.nodes if n.type=="BACKGROUND").inputs["Strength"].default_value=0.05' >/dev/null
 "$BL" save >/dev/null
-"$BL" run -e 'obj("Sonne").data.energy=0.2' >/dev/null
+"$BL" run -e 'obj("Sun").data.energy=0.2' >/dev/null
 o=$("$BL" look --mode cam --compare last --size 200 --samples 4)
-check "A1 cam-compare: Lichtänderung sichtbar (alter Stand mit altem Licht)" has 'cam [1-9][0-9]*\.[0-9] %'; check "A1 keine Warnung" hasnt "kaum sichtbar"
-o=$("$BL" run -e 'result={"lights": sorted(o.name for o in bpy.context.scene.objects if o.type=="LIGHT"), "e": round(obj("Sonne").data.energy, 3), "scenes": len(bpy.data.scenes), "worlds": len(bpy.data.worlds), "welt_gesetzt": bpy.context.scene.world is not None and bpy.context.scene.world.library is None and not bpy.context.scene.world.name.endswith(".001")}')
-check "A1 cam-compare räumt auf (Licht, Welt, Szene)" has '"lights": \["Sonne"\], "e": 0.2, "scenes": 1, "worlds": 1, "welt_gesetzt": true'
-zust='s=bpy.context.scene; c=getattr(s,"cycles",None); result={"vorher": [s.render.engine, s.eevee.taa_render_samples, c.samples if c else None, c.device if c else None]}'
-o=$("$BL" run -e "$zust"); vorher=$(grep -o '"vorher": \[[^]]*\]' <<<"$o")
-check "C Zustand vorher gelesen" test -n "$vorher"
-o=$("$BL" look --mode cam --engine cycles --samples 2 --size 160); check "C --engine cycles rendert mit Cycles" has "Engine cycles \((OPTIX|CUDA|CPU)\)"
-o=$("$BL" run -e "$zust"); check "C Engine, Samples, Cycles-Samples/Gerät zurückgesetzt" grep -qF -- "$vorher" <<<"$o"
-o=$("$BL" look --engine cycles 2>&1); check "C --engine ohne cam → Fehler" grep -q "nur mit --mode cam" <<<"$o"
-# --- Phase 2 A7: bl open schaltet um, schützt ungespeicherte Änderungen
+check "cam compare: light change visible (old state with old light)" has 'cam [1-9][0-9]*\.[0-9] %'; check "cam compare: no warning" hasnt "barely visible"
+o=$("$BL" run -e 'result={"lights": sorted(o.name for o in bpy.context.scene.objects if o.type=="LIGHT"), "e": round(obj("Sun").data.energy, 3), "scenes": len(bpy.data.scenes), "worlds": len(bpy.data.worlds), "world_set": bpy.context.scene.world is not None and bpy.context.scene.world.library is None and not bpy.context.scene.world.name.endswith(".001")}')
+check "cam compare cleans up (light, world, scene)" has '"lights": \["Sun"\], "e": 0.2, "scenes": 1, "worlds": 1, "world_set": true'
+state='s=bpy.context.scene; c=getattr(s,"cycles",None); result={"before": [s.render.engine, s.eevee.taa_render_samples, c.samples if c else None, c.device if c else None]}'
+o=$("$BL" run -e "$state"); before=$(grep -o '"before": \[[^]]*\]' <<<"$o")
+check "engine: state read before" test -n "$before"
+o=$("$BL" look --mode cam --engine cycles --samples 2 --size 160); check "--engine cycles renders with Cycles" has "engine cycles \((OPTIX|CUDA|CPU)\)"
+o=$("$BL" run -e "$state"); check "engine, samples, Cycles samples/device restored" grep -qF -- "$before" <<<"$o"
+o=$("$BL" look --engine cycles 2>&1); check "--engine without cam → error" grep -q "only with --mode cam" <<<"$o"
+# --- bl open switches scenes, protects unsaved changes
 pid1=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['pid'])" "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION/worker.json")
-o=$("$BL" open --leer 2>&1); rc=$?; check "A7 open bei Änderungen → Abbruch" bash -c "[ $rc -eq 2 ]"; check "A7 Meldung nennt ungespeicherte Änderungen" has "ungespeicherte Änderungen"
-check "A7 Worker läuft nach Abbruch weiter" bash -c "kill -0 $pid1"
-o=$("$BL" open "$BL_ROOT/gibtsnicht.blend" --verwerfen 2>&1); check "A7 falsches Ziel: Fehler" has "Datei fehlt"; check "A7 falsches Ziel: Worker bleibt" bash -c "kill -0 $pid1"
-"$BL" run -e 'def kaputt(): raise RuntimeError("x")
-bl.changed = kaputt' >/dev/null; "$BL" save >/dev/null
-o=$("$BL" open --leer 2>&1); rc=$?; check "A7 Zustand unbekannt → Abbruch" bash -c "[ $rc -eq 2 ]"; check "A7 Meldung: Zustand unbekannt" has "Zustand unbekannt"
+o=$("$BL" open --empty 2>&1); rc=$?; check "open with changes → abort" bash -c "[ $rc -eq 2 ]"; check "open: message names unsaved changes" has "unsaved changes"
+check "open: worker keeps running after abort" bash -c "kill -0 $pid1"
+o=$("$BL" open "$BL_ROOT/doesnotexist.blend" --discard 2>&1); check "open wrong target: error" has "file missing"; check "open wrong target: worker stays" bash -c "kill -0 $pid1"
+"$BL" run -e 'def broken(): raise RuntimeError("x")
+bl.changed = broken' >/dev/null; "$BL" save >/dev/null
+o=$("$BL" open --empty 2>&1); rc=$?; check "open state unknown → abort" bash -c "[ $rc -eq 2 ]"; check "open: message state unknown" has "state unknown"
 "$BL" run -e 'bl.changed = lambda: bl._changed' >/dev/null
 "$BL" save >/dev/null
-o=$("$BL" open --leer); check "A7 open schaltet nach save um" grep -q "Szene leer" <<<"$o"
-sleep 0.5; check "A7 alter Worker beendet" bash -c "! kill -0 $pid1 2>/dev/null"
+o=$("$BL" open --empty); check "open switches after save" grep -q "scene empty" <<<"$o"
+sleep 0.5; check "open: old worker stopped" bash -c "! kill -0 $pid1 2>/dev/null"
 "$BL" run -e 'bpy.ops.mesh.primitive_cube_add()' >/dev/null
-o=$("$BL" open --verwerfen); check "A7 open --verwerfen lädt gespeicherte Datei" grep -q "test-kiste.blend" <<<"$o"
-# --- Phase 2 B: bl qa findet eingebaute Fehler, sauberer Würfel besteht
+o=$("$BL" open --discard); check "open --discard loads the saved file" grep -q "test-box.blend" <<<"$o"
+# --- bl qa finds built-in errors, a clean cube passes
 "$BL" run -e 'import bmesh
 m=bpy.data.materials.new("Q")
-def wuerfel(n, loc, size=1):
+def cube(n, loc, size=1):
     bpy.ops.mesh.primitive_cube_add(size=size, location=loc); o=bpy.context.object; o.name=n; o.data.materials.append(m); return o
-wuerfel("QSauber", (20,0,0.5))
-o=wuerfel("QLoch", (23,0,0.5)); bm=bmesh.new(); bm.from_mesh(o.data); bm.faces.ensure_lookup_table(); bmesh.ops.delete(bm, geom=[bm.faces[0]], context="FACES_ONLY"); bm.to_mesh(o.data); bm.free()
-o=wuerfel("QUmgedreht", (26,0,0.5)); bm=bmesh.new(); bm.from_mesh(o.data); bmesh.ops.reverse_faces(bm, faces=bm.faces[:]); bm.to_mesh(o.data); bm.free()
-wuerfel("QSchwebt", (20,0,3), 0.2)
-o=wuerfel("QSkaliert", (29,0,1)); o.scale=(2,2,2)
+cube("QClean", (20,0,0.5))
+o=cube("QHole", (23,0,0.5)); bm=bmesh.new(); bm.from_mesh(o.data); bm.faces.ensure_lookup_table(); bmesh.ops.delete(bm, geom=[bm.faces[0]], context="FACES_ONLY"); bm.to_mesh(o.data); bm.free()
+o=cube("QFlipped", (26,0,0.5)); bm=bmesh.new(); bm.from_mesh(o.data); bmesh.ops.reverse_faces(bm, faces=bm.faces[:]); bm.to_mesh(o.data); bm.free()
+cube("QFloating", (20,0,3), 0.2)
+o=cube("QScaled", (29,0,1)); o.scale=(2,2,2)
 me=bpy.data.meshes.new("QS"); bm=bmesh.new()
 v=[bm.verts.new(p) for p in [(0,0,0),(1,0,0),(1,1,1),(0,1,1),(0.5,-0.00001,0)]]
 bm.faces.new((v[0],v[1],v[2],v[3])); bm.faces.new((v[0],v[4],v[1])); bm.to_mesh(me); bm.free()
-s=bpy.data.objects.new("QSplitter",me); bpy.context.scene.collection.objects.link(s); s.location=(32,0,0); me.materials.append(m)' >/dev/null
-o=$("$BL" qa --obj QSauber --profile game 2>&1); rc=$?; check "B qa: sauberer Würfel besteht (Exit 0)" bash -c "[ $rc -eq 0 ]"; check "B qa: Kopfzeile bestanden" has "✓ qa bestanden · Profil game · als ein Asset · Tris 12"
-check "B qa: Bericht in messung/" has "messung/[0-9]{3}_qa-game.json"
-o=$("$BL" qa --obj QLoch --profile print 2>&1); rc=$?; check "B qa: Loch → Exit 1" bash -c "[ $rc -eq 1 ]"; check "B qa: Loch erkannt" has "FEHLER  QLoch: 4 open boundary edges"
-o=$("$BL" qa --obj QUmgedreht --profile print 2>&1); check "B qa: umgedrehte Normalen" has "QUmgedreht: 1 closed parts with normals pointing inward"
-o=$("$BL" qa --obj QSauber --obj QSchwebt --profile render 2>&1); check "B qa: schwebendes Teil" has "floating/detached part in QSchwebt"
-o=$("$BL" qa --obj QSkaliert --profile game 2>&1); check "B qa: Skalierung nicht angewendet" has "FEHLER  QSkaliert: unapplied scale"
-o=$("$BL" qa --obj QSplitter --profile render 2>&1); rc=$?; check "B qa: Splitter bei render nur Warnung (Exit 0)" bash -c "[ $rc -eq 0 ]"; check "B qa: Splitter-Warnung" has "Warnung QSplitter: kaputte Flächen splitter 1"
-o=$("$BL" qa --obj QSplitter --profile game 2>&1); rc=$?; check "B qa: Splitter bei game Fehler (Exit 1)" bash -c "[ $rc -eq 1 ]"; check "B qa: Splitter-Fehler" has "FEHLER  QSplitter: kaputte Flächen splitter 1"
-o=$("$BL" qa --obj QSauber --profile game --budget 10 2>&1); rc=$?; check "B qa: Polybudget" bash -c "[ $rc -eq 1 ]"; check "B qa: Polybudget Meldung" has "Polybudget überschritten: 12 Tris > 10"
-o=$("$BL" qa --obj Gibtsnicht 2>&1); rc=$?; check "B qa: unbekanntes Objekt → Exit 2" bash -c "[ $rc -eq 2 ]"
-o=$(BL_QA_DIR=/gibtsnicht "$BL" qa 2>&1); rc=$?; check "B qa: qa_check fehlt → Exit 3" bash -c "[ $rc -eq 3 ]"
-o=$("$BL" qa --budget 0 2>&1); rc=$?; check "B qa: --budget 0 abgelehnt" bash -c "[ $rc -eq 2 ]"
-"$BL" run -e 'bpy.context.view_layer.objects.active=obj("QSauber"); bpy.ops.object.mode_set(mode="EDIT")' >/dev/null
-o=$("$BL" qa --obj QSauber --profile game 2>&1); o=$("$BL" run -e 'result={"modus": bpy.context.object.mode, "aktiv": bpy.context.view_layer.objects.active.name}')
-check "B qa: Edit-Modus und aktives Objekt bleiben" has '"modus": "EDIT", "aktiv": "QSauber"'
+s=bpy.data.objects.new("QSliver",me); bpy.context.scene.collection.objects.link(s); s.location=(32,0,0); me.materials.append(m)' >/dev/null
+o=$("$BL" qa --obj QClean --profile game 2>&1); rc=$?; check "qa: clean cube passes (exit 0)" bash -c "[ $rc -eq 0 ]"; check "qa: header passed" has "✓ qa passed · profile game · as one asset · tris 12"
+check "qa: report in measurements/" has "measurements/[0-9]{3}_qa-game.json"
+o=$("$BL" qa --obj QHole --profile print 2>&1); rc=$?; check "qa: hole → exit 1" bash -c "[ $rc -eq 1 ]"; check "qa: hole detected" has "ERROR   QHole: 4 open boundary edges"
+o=$("$BL" qa --obj QFlipped --profile print 2>&1); check "qa: flipped normals" has "QFlipped: 1 closed parts with normals pointing inward"
+o=$("$BL" qa --obj QClean --obj QFloating --profile render 2>&1); check "qa: floating part" has "floating/detached part in QFloating"
+o=$("$BL" qa --obj QScaled --profile game 2>&1); check "qa: unapplied scale" has "ERROR   QScaled: unapplied scale"
+o=$("$BL" qa --obj QSliver --profile render 2>&1); rc=$?; check "qa: sliver only a warning with render (exit 0)" bash -c "[ $rc -eq 0 ]"; check "qa: sliver warning" has "warning QSliver: broken faces slivers 1"
+o=$("$BL" qa --obj QSliver --profile game 2>&1); rc=$?; check "qa: sliver an error with game (exit 1)" bash -c "[ $rc -eq 1 ]"; check "qa: sliver error" has "ERROR   QSliver: broken faces slivers 1"
+o=$("$BL" qa --obj QClean --profile game --budget 10 2>&1); rc=$?; check "qa: poly budget" bash -c "[ $rc -eq 1 ]"; check "qa: poly budget message" has "poly budget exceeded: 12 tris > 10"
+o=$("$BL" qa --obj DoesNotExist 2>&1); rc=$?; check "qa: unknown object → exit 2" bash -c "[ $rc -eq 2 ]"
+o=$(BL_QA_DIR=/doesnotexist "$BL" qa 2>&1); rc=$?; check "qa: qa_check missing → exit 3" bash -c "[ $rc -eq 3 ]"
+o=$("$BL" qa --budget 0 2>&1); rc=$?; check "qa: --budget 0 rejected" bash -c "[ $rc -eq 2 ]"
+"$BL" run -e 'bpy.context.view_layer.objects.active=obj("QClean"); bpy.ops.object.mode_set(mode="EDIT")' >/dev/null
+o=$("$BL" qa --obj QClean --profile game 2>&1); o=$("$BL" run -e 'result={"mode": bpy.context.object.mode, "active": bpy.context.view_layer.objects.active.name}')
+check "qa: edit mode and active object preserved" has '"mode": "EDIT", "active": "QClean"'
 "$BL" run -e 'bpy.ops.object.mode_set(mode="OBJECT")' >/dev/null
-"$BL" run -e 'for n in ("QSauber","QLoch","QUmgedreht","QSchwebt","QSkaliert","QSplitter"): bpy.data.objects.remove(obj(n))' >/dev/null
-# --- Review 2: qa ohne --obj prüft jedes Objekt einzeln (getrennte Teile auf einem Boden sind kein Fehler)
-"$BL" open --leer --verwerfen >/dev/null
+"$BL" run -e 'for n in ("QClean","QHole","QFlipped","QFloating","QScaled","QSliver"): bpy.data.objects.remove(obj(n))' >/dev/null
+# --- qa without --obj checks each object separately (separate parts on a ground plane are not an error)
+"$BL" open --empty --discard >/dev/null
 "$BL" run -e 'm=bpy.data.materials.new("Q")
-for n, x in (("Tisch", 0), ("Stuhl", 3)):
+for n, x in (("Table", 0), ("Chair", 3)):
     bpy.ops.mesh.primitive_cube_add(size=1, location=(x,0,0.5)); o=bpy.context.object; o.name=n; o.data.materials.append(m)
-bpy.ops.mesh.primitive_plane_add(size=50); bpy.context.object.name="Boden"' >/dev/null
-o=$("$BL" qa --profile game 2>&1); rc=$?; check "qa einzeln: Tisch und Stuhl getrennt bestehen" bash -c "[ $rc -eq 0 ]"; check "qa einzeln: Kopfzeile" has "je Objekt einzeln"; check "qa einzeln: kein floating" hasnt "floating"
-o=$("$BL" qa --obj Tisch --obj Stuhl --profile game 2>&1); check "qa als Asset: getrennte Teile → floating" has "floating"
-"$BL" run -e 'bpy.ops.mesh.primitive_plane_add(size=0.4, location=(0,0,1.0)); o=bpy.context.object; o.name="Aufkleber"; o.data.materials.append(bpy.data.materials["Q"])' >/dev/null
-o=$("$BL" qa --profile game 2>&1); rc=$?; check "qa einzeln: z-fighting zwischen Objekten erkannt (Exit 1)" bash -c "[ $rc -eq 1 ]"; check "qa einzeln: z-fighting-Paar" has "z-fighting: (Tisch<->Aufkleber|Aufkleber<->Tisch)"
-"$BL" run -e 'bpy.data.objects.remove(obj("Aufkleber"))' >/dev/null
-# --- Review 2: close schützt ungespeicherte Arbeit, Leerlauf sichert sie
-o=$("$BL" close 2>&1); rc=$?; check "close mit Änderungen → Abbruch" bash -c "[ $rc -eq 2 ]"; check "close: Meldung" has "close --verwerfen"
+bpy.ops.mesh.primitive_plane_add(size=50); bpy.context.object.name="Ground"' >/dev/null
+o=$("$BL" qa --profile game 2>&1); rc=$?; check "qa per object: table and chair pass separately" bash -c "[ $rc -eq 0 ]"; check "qa per object: header" has "each object separately"; check "qa per object: no floating" hasnt "floating"
+o=$("$BL" qa --obj Table --obj Chair --profile game 2>&1); check "qa as one asset: separate parts → floating" has "floating"
+"$BL" run -e 'bpy.ops.mesh.primitive_plane_add(size=0.4, location=(0,0,1.0)); o=bpy.context.object; o.name="Sticker"; o.data.materials.append(bpy.data.materials["Q"])' >/dev/null
+o=$("$BL" qa --profile game 2>&1); rc=$?; check "qa per object: z-fighting between objects detected (exit 1)" bash -c "[ $rc -eq 1 ]"; check "qa per object: z-fighting pair" has "z-fighting: (Table<->Sticker|Sticker<->Table)"
+"$BL" run -e 'bpy.data.objects.remove(obj("Sticker"))' >/dev/null
+# --- close protects unsaved work, idle exit backs it up
+o=$("$BL" close 2>&1); rc=$?; check "close with changes → abort" bash -c "[ $rc -eq 2 ]"; check "close: message" has "close --discard"
 "$BL" save >/dev/null
 idle_sd="${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION-idle"
 (
   export BL_SESSION="$BL_SESSION-idle" BL_IDLE=3
-  "$BL" projekt "Test Kiste" >/dev/null; "$BL" open --leer >/dev/null
+  "$BL" project "Test Box" >/dev/null; "$BL" open --empty >/dev/null
   sleep 7
 )
-check "Leerlauf ohne Änderungen: keine Sicherung" test ! -e "$idle_sd/autosave.blend"
+check "idle without changes: no backup" test ! -e "$idle_sd/autosave.blend"
 (
   export BL_SESSION="$BL_SESSION-idle" BL_IDLE=3
-  "$BL" open --leer >/dev/null; "$BL" run -e 'bpy.ops.mesh.primitive_cube_add()' >/dev/null
+  "$BL" open --empty >/dev/null; "$BL" run -e 'bpy.ops.mesh.primitive_cube_add()' >/dev/null
   sleep 7
 )
-check "Leerlauf: Sicherung geschrieben" test -s "$idle_sd/autosave.blend"
-check "Leerlauf: keine pending-Datei übrig" test ! -e "$idle_sd/autosave.blend.pending"
-o=$(BL_SESSION="$BL_SESSION-idle" "$BL" info 2>&1); rc=$?; check "Leerlauf: stiller Start bricht ab (nicht auf altem Stand weiter)" bash -c "[ $rc -eq 2 ]"; check "Leerlauf: Meldung nennt bl open" has "bl open .*autosave.blend"
-o=$(BL_SESSION="$BL_SESSION-idle" "$BL" open "$idle_sd/autosave.blend" 2>&1); check "Leerlauf: bl open <Sicherung> lädt sie" has "gesichert: .*autosave_[0-9-]+\.blend"
-o=$(BL_SESSION="$BL_SESSION-idle" "$BL" info 2>&1); check "Leerlauf: Würfel aus der Sicherung da" has "Cube"
-BL_SESSION="$BL_SESSION-idle" "$BL" close --verwerfen >/dev/null
-o=$("$BL" ls); check "ls zeigt 2 Versionen" bash -c "[ \$(grep -c ' v00' <<<\"$o\") -eq 2 ]"
-o=$(BL_ROOT=relativ "$BL" ls 2>&1); check "relatives BL_ROOT abgelehnt" grep -q "absoluter Pfad" <<<"$o"
-# --- bl docs (echte Daten aus .docs, ohne Worker)
-o=$("$BL" docs bpy.types.Object.matrix_world 2>&1); check "docs: exakter Name" has "attribute:: matrix_world" "Worldspace transformation matrix" ":type: mathutils.Matrix"
-o=$("$BL" docs bmesh.ops.bevel 2>&1); check "docs: bmesh-Funktion mit Signatur" has "function:: bevel\\(bm" "mark_sharp=False"
-o=$("$BL" docs bpy.types.Mesh.name 2>&1); check "docs: Mitglied aus Basisklasse ID" has "bpy.types.ID.rst" "attribute:: name"
-o=$("$BL" docs bevel modifier --manual 2>&1); check "docs: Handbuch-Suche" has "manual/modeling/modifiers/generate/bevel.rst" "--manual --hit i"
-o=$("$BL" docs bevel modifier --manual --hit 0 2>&1); check "docs: Treffer vertiefen" has "^\\[0\\] manual/modeling/modifiers/generate/bevel.rst"
-o=$("$BL" docs xyzzyqq plugh 2>&1); rc=$?; check "docs: nichts gefunden → Exit 1" bash -c "[ $rc -eq 1 ]"
-o=$(BL_DOCS_DIR=/nonexistent "$BL" docs bevel 2>&1); rc=$?; check "docs: Daten fehlen → Exit 3 mit Hinweis" bash -c "[ $rc -eq 3 ]"
-o=$("$BL" doctor); check "doctor" grep -q "Blender 5.2" <<<"$o"; check "doctor: PIL ok" grep -q "PIL im Worker: ok" <<<"$o"; check "doctor: Doku ok" has "Doku \(bl docs\): ok \(api [0-9]+, manual [0-9]+ Dateien\)"
-[ $fail -eq 0 ] && echo "== selftest OK" || echo "== selftest FEHLGESCHLAGEN"
+check "idle: backup written" test -s "$idle_sd/autosave.blend"
+check "idle: no pending file left" test ! -e "$idle_sd/autosave.blend.pending"
+o=$(BL_SESSION="$BL_SESSION-idle" "$BL" info 2>&1); rc=$?; check "idle: silent start aborts (does not continue on the old state)" bash -c "[ $rc -eq 2 ]"; check "idle: message names bl open" has "bl open .*autosave.blend"
+o=$(BL_SESSION="$BL_SESSION-idle" "$BL" open "$idle_sd/autosave.blend" 2>&1); check "idle: bl open <backup> loads it" has "backup: .*autosave_[0-9-]+\.blend"
+o=$(BL_SESSION="$BL_SESSION-idle" "$BL" info 2>&1); check "idle: cube from the backup is there" has "Cube"
+BL_SESSION="$BL_SESSION-idle" "$BL" close --discard >/dev/null
+o=$("$BL" ls); check "ls shows 2 versions" bash -c "[ \$(grep -c ' v00' <<<\"$o\") -eq 2 ]"
+o=$(BL_ROOT=relative "$BL" ls 2>&1); check "relative BL_ROOT rejected" grep -q "absolute path" <<<"$o"
+# --- bl docs (real data from .docs, no worker)
+o=$("$BL" docs bpy.types.Object.matrix_world 2>&1); check "docs: exact name" has "attribute:: matrix_world" "Worldspace transformation matrix" ":type: mathutils.Matrix"
+o=$("$BL" docs bmesh.ops.bevel 2>&1); check "docs: bmesh function with signature" has "function:: bevel\\(bm" "mark_sharp=False"
+o=$("$BL" docs bpy.types.Mesh.name 2>&1); check "docs: member from base class ID" has "bpy.types.ID.rst" "attribute:: name"
+o=$("$BL" docs bevel modifier --manual 2>&1); check "docs: manual search" has "manual/modeling/modifiers/generate/bevel.rst" "--manual --hit i"
+o=$("$BL" docs bevel modifier --manual --hit 0 2>&1); check "docs: deepen a hit" has "^\\[0\\] manual/modeling/modifiers/generate/bevel.rst"
+o=$("$BL" docs xyzzyqq plugh 2>&1); rc=$?; check "docs: nothing found → exit 1" bash -c "[ $rc -eq 1 ]"
+o=$(BL_DOCS_DIR=/nonexistent "$BL" docs bevel 2>&1); rc=$?; check "docs: data missing → exit 3 with hint" bash -c "[ $rc -eq 3 ]"
+o=$("$BL" doctor); check "doctor" grep -q "Blender 5.2" <<<"$o"; check "doctor: PIL ok" grep -q "PIL in worker: ok" <<<"$o"; check "doctor: docs ok" has "docs \(bl docs\): ok \(api [0-9]+, manual [0-9]+ files\)"
+[ $fail -eq 0 ] && echo "== selftest OK" || echo "== selftest FAILED"
 exit $fail

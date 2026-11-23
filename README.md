@@ -16,7 +16,7 @@ We gave Claude Opus 5.5 the same modeling task (a coffee mug with exact dimensio
 | Wall time | **4.4 min** | 6.2 min |
 | Weighted tokens | **431k** (−22 %) | 553k |
 | Output tokens | **24k** | 34k |
-| Final mesh check (`bl qa --profile render`) | **0 warnings** | 3 warnings (zero-length edges, duplicate vertices) |
+| Final mesh check (`bl qa --profile render`) | **0 warnings** | 3 warnings (no UVs, zero-length edges, duplicate vertices) |
 | RAM, Blender side (mean) | **~0.5 GB** (headless) | ~1.2 GB (GUI + X server) |
 
 ![Wireframes: bl (left), official MCP (right)](docs/images/ab-wireframe.jpg)

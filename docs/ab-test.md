@@ -31,10 +31,11 @@ Each image is the agent's own final render or wireframe from its run, with the h
 | Output tokens | 41k | **24k** | 34k |
 | **Weighted tokens** | 750k | **431k** | 553k |
 | Images viewed by the agent | 23 | 15 | 11 |
-| `bl qa --profile render` | pass, 1 warning (no UVs) | **pass, 0 warnings** | pass, 3 warnings: 2 zero-length edges and 4 duplicate vertices at the boolean seam, missed by the agent's own checks |
+| `bl qa --profile render` | pass, 1 warning (no UVs) | **pass, 0 warnings** | pass, 3 warnings: no UV map, 2 zero-length edges and 4 duplicate vertices at the boolean seam (the last two missed by the agent's own checks) |
+| Final mesh: tris / n-gons | – | 4,654 / 26 | 5,876 / 27 |
 | RAM, Blender side (mean / peak) | 533 / 659 MB | – | 1176 / 1466 MB |
 
-All three mugs meet the dimensions within about 0.2 mm and look comparable. None of them has a true fillet where the handle meets the wall.
+All three mugs meet the dimensions within about 0.2 mm and look comparable. None of them has a true fillet where the handle meets the wall, and both A2 and B have about 26 n-gons along the boolean seam of the handle.
 
 ## What the numbers say
 

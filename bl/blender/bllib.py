@@ -206,34 +206,66 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, bg=(242, 242, 242)):
-    """Rendert Ansichten (Workbench, orthografisch, gerahmt) in eine PNG mit Textstreifen. mode: solid|wire|cam."""
-    from PIL import Image, ImageDraw
+_ID_COLLS = ("objects", "meshes", "materials", "images", "node_groups", "textures", "curves", "collections",
+             "cameras", "lights", "actions", "metaballs", "lattices", "armatures", "volumes", "pointclouds",
+             "hair_curves", "grease_pencils", "fonts", "particles")
+
+
+def _hide_others(scene, keep):
+    keep_p = {o.as_pointer() for o in keep}
+    hidden = []
+    for o in scene.objects:
+        if o.type in GEOM_TYPES and o.as_pointer() not in keep_p and not o.hide_render:
+            o.hide_render = True
+            hidden.append(o)
+    return hidden
+
+
+def _append_ref(path, names, tmpdir):
+    """Lädt die Geometrie-Objekte eines gespeicherten Stands temporär in die Szene. → (objekte, neue IDs zum Entfernen)."""
+    import shutil
+    colls = [c for c in _ID_COLLS if hasattr(bpy.data, c)]
+    tmp = os.path.join(tmpdir, "_bl_ref_{}.blend".format(os.getpid()))
+    shutil.copyfile(path, tmp)  # Kopie: aus der gerade offenen Datei kann Blender nicht anhängen
+    before = {c: {i.as_pointer() for i in getattr(bpy.data, c)} for c in colls}
+    try:
+        with bpy.data.libraries.load(tmp, link=False) as (src, dst):
+            srcnames = list(src.objects)
+            dst.objects = srcnames
+    finally:
+        os.remove(tmp)
     scene = bpy.context.scene
-    if mode == "cam":
-        return _look_cam(out, panel)
-    if names:
-        objs = [obj(n) for n in names]
-    else:
-        objs = [o for o in scene.objects if o.type in GEOM_TYPES and o.visible_get()]
-    if not objs:
-        raise RuntimeError("Nichts zu sehen: keine sichtbaren Geometrie-Objekte in der Szene")
-    mn, mx = bbox_world(objs)
+    ref = []
+    for n, o in zip(srcnames, dst.objects):
+        if o is None or o.type not in GEOM_TYPES:
+            continue
+        if (names and n not in names) or (not names and o.hide_render):
+            continue
+        scene.collection.objects.link(o)
+        ref.append(o)
+    new = [i for c in colls for i in getattr(bpy.data, c) if i.as_pointer() not in before[c]]
+    return ref, new
+
+
+def _render_views(out, objs, frame, views, mode, panel, tag):
+    """Workbench-Renders der Objekte objs (alles andere ausgeblendet), Kamera gerahmt auf frame. → [(view, RGBA, mm/px)]"""
+    from PIL import Image
+    scene = bpy.context.scene
+    mn, mx = bbox_world(frame)
     center = (mn + mx) / 2
     radius = max((mx - mn).length / 2, 1e-4)
-
     r, sh = scene.render, scene.display.shading
     saved = {"engine": r.engine, "rx": r.resolution_x, "ry": r.resolution_y, "pct": r.resolution_percentage,
              "film": r.film_transparent, "fp": r.filepath, "cam": scene.camera, "fmt": r.image_settings.file_format,
              "cmode": r.image_settings.color_mode,
-             "light": sh.light, "ctype": sh.color_type, "cav": sh.show_cavity, "outl": sh.show_object_outline,
-             "scol": tuple(sh.single_color)}
-    hidden, temps, colors = [], [], {}
+             "light": sh.light, "ctype": sh.color_type, "cav": sh.show_cavity, "outl": sh.show_object_outline}
+    temps, colors = [], {}
     cam_data = bpy.data.cameras.new("_bl_look_cam")
     cam = bpy.data.objects.new("_bl_look_cam", cam_data)
     scene.collection.objects.link(cam)
     temps.append(cam)
-    paths = []
+    hidden = _hide_others(scene, objs)
+    res = []
     try:
         r.engine = "BLENDER_WORKBENCH"
         r.resolution_x = r.resolution_y = panel
@@ -244,18 +276,12 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         sh.light = "STUDIO"
         sh.show_cavity = True
         sh.show_object_outline = True
-        if names:  # nur die gewählten Objekte zeigen
-            keep = set(names)
-            for o in scene.objects:
-                if o.type in GEOM_TYPES and o.name not in keep and not o.hide_render:
-                    o.hide_render = True
-                    hidden.append(o)
         if mode == "wire":
             sh.color_type = "OBJECT"
             for o in objs:
                 if o.type != "MESH":
                     continue
-                colors[o.name] = tuple(o.color)
+                colors[o.as_pointer()] = (o, tuple(o.color))
                 o.color = (0.78, 0.78, 0.78, 1)
                 w = o.copy()
                 w.name = "_bl_wire_" + o.name
@@ -268,7 +294,6 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
                 temps.append(w)
         cam_data.type = "ORTHO"
         scene.camera = cam
-        mmpp = []
         for v in views:
             d = Vector(VIEW_DIRS[v]).normalized()
             dist = radius * 4
@@ -281,20 +306,23 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
                 cam.rotation_euler = (-d).to_track_quat("-Z", "Y").to_euler()
             bpy.context.view_layer.update()
             inv = cam.matrix_world.inverted()
+            dg = bpy.context.evaluated_depsgraph_get()
             ext = 0.0
-            for o in objs:
-                oe = o.evaluated_get(bpy.context.evaluated_depsgraph_get())
+            for o in frame:
+                oe = o.evaluated_get(dg)
                 for c in oe.bound_box:
                     p = inv @ (oe.matrix_world @ Vector(c))
                     ext = max(ext, abs(p.x), abs(p.y))
             cam_data.ortho_scale = max(ext * 2 * 1.1, 1e-4)
             cam_data.clip_start = max(radius * 0.01, 1e-5)
             cam_data.clip_end = dist + radius * 4
-            p = "{}.{}.tmp.png".format(out, v)
+            p = "{}.{}.{}.tmp.png".format(out, v, tag)
             r.filepath = p
             bpy.ops.render.render(write_still=True)
-            paths.append((v, p))
-            mmpp.append(cam_data.ortho_scale * scene.unit_settings.scale_length * 1000 / panel)
+            im = Image.open(p).convert("RGBA")
+            im.load()
+            os.remove(p)
+            res.append((v, im, cam_data.ortho_scale * scene.unit_settings.scale_length * 1000 / panel))
     finally:
         for o in temps:
             data = o.data if o.type == "CAMERA" else None
@@ -303,38 +331,139 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
                 bpy.data.cameras.remove(data)
         for o in hidden:
             o.hide_render = False
-        for n, c in colors.items():
-            if n in bpy.data.objects:
-                bpy.data.objects[n].color = c
+        for o, c in colors.values():
+            o.color = c
         r.engine, r.resolution_x, r.resolution_y = saved["engine"], saved["rx"], saved["ry"]
         r.resolution_percentage, r.film_transparent, r.filepath = saved["pct"], saved["film"], saved["fp"]
         r.image_settings.file_format, r.image_settings.color_mode = saved["fmt"], saved["cmode"]
         scene.camera = saved["cam"]
         sh.light, sh.color_type, sh.show_cavity, sh.show_object_outline = saved["light"], saved["ctype"], saved["cav"], saved["outl"]
+    return res
+
+
+def _render_cam(out, panel, objs, tag):
+    """Render der Szenenkamera mit eingestellter Engine, nur objs sichtbar (Licht/Boden bleiben)."""
+    from PIL import Image
+    scene = bpy.context.scene
+    if scene.camera is None:
+        raise RuntimeError("Szene hat keine Kamera (--mode cam braucht scene.camera)")
+    r = scene.render
+    saved = (r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, r.image_settings.file_format)
+    aspect = r.resolution_y / max(r.resolution_x, 1)
+    hidden = _hide_others(scene, objs) if objs is not None else []
+    p = "{}.cam.{}.tmp.png".format(out, tag)
+    try:
+        r.resolution_x, r.resolution_y, r.resolution_percentage = panel, max(1, round(panel * aspect)), 100
+        r.image_settings.file_format = "PNG"
+        r.filepath = p
+        bpy.ops.render.render(write_still=True)
+        im = Image.open(p).convert("RGBA")
+        im.load()
+        os.remove(p)
+    finally:
+        for o in hidden:
+            o.hide_render = False
+        r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, r.image_settings.file_format = saved
+    return im
+
+
+def _diff(a, b):
+    """Anteil geänderter Pixel (in % der Objektfläche bzw. des Bilds) und Rahmen der Änderung."""
+    import numpy as np
+    A = np.asarray(a, dtype=np.int16)
+    B = np.asarray(b, dtype=np.int16)
+    if A.shape != B.shape:
+        return None, None
+    ina, inb = A[..., 3] > 0, B[..., 3] > 0
+    ch = (np.abs(A[..., :3] - B[..., :3]).max(axis=2) > 12) | (ina != inb)
+    area = int((ina | inb).sum())
+    if area == 0 or area == ina.size:
+        area = ina.size
+    n = int(ch.sum())
+    ys, xs = np.nonzero(ch)
+    bbox = [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())] if n else None
+    return 100.0 * n / area, bbox
+
+
+def _tile(im, label, font, bg):
+    from PIL import Image, ImageDraw
+    base = Image.new("RGBA", im.size, bg + (255,))
+    base.alpha_composite(im)
+    ImageDraw.Draw(base).text((6, 4), label, fill=(30, 30, 30), font=font)
+    return base.convert("RGB")
+
+
+def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, compare=None, bg=(242, 242, 242)):
+    """Rendert Ansichten in eine PNG mit Textstreifen. mode: solid|wire (Workbench, ortho, gerahmt) oder cam.
+    compare=<.blend>: derselbe Blick auf den gespeicherten Stand links ("vorher"), aktuelle Szene rechts ("jetzt"),
+    gleiche Kamera für beide; Änderung in % mit rotem Rahmen."""
+    from PIL import Image, ImageDraw
+    scene = bpy.context.scene
+    ref, new_ids = [], []
+    try:
+        if compare:
+            ref, new_ids = _append_ref(compare, names, os.path.dirname(out))
+            if not ref:
+                raise RuntimeError("Vergleichsstand {} enthält keine passenden Geometrie-Objekte".format(compare))
+        refp = {o.as_pointer() for o in ref}
+        if names:
+            objs = [obj(n) for n in names]
+        else:
+            objs = [o for o in scene.objects if o.type in GEOM_TYPES and o.visible_get() and o.as_pointer() not in refp]
+        if not objs:
+            raise RuntimeError("Nichts zu sehen: keine sichtbaren Geometrie-Objekte in der Szene")
+        if mode == "cam":
+            cur = [("cam", _render_cam(out, panel, objs if compare else None, "jetzt"), None)]
+            old = [("cam", _render_cam(out, panel, ref, "vorher"), None)] if compare else []
+        else:
+            frame = objs + ref
+            cur = _render_views(out, objs, frame, views, mode, panel, "jetzt")
+            old = _render_views(out, ref, frame, views, mode, panel, "vorher") if compare else []
+        faces = sum(mesh_stats(o, manifold=False).get("f", 0) for o in objs if o.type == "MESH")
+        names_txt = ", ".join(o.name for o in objs[:8]) + (" …" if len(objs) > 8 else "")
+    finally:
+        if new_ids:
+            bpy.data.batch_remove(new_ids)
 
     font, font_s = _font(max(11, panel // 40)), _font(12)
-    tiles = []
-    for v, p in paths:
-        im = Image.open(p).convert("RGBA")
-        base = Image.new("RGBA", im.size, bg + (255,))
-        base.alpha_composite(im)
-        ImageDraw.Draw(base).text((6, 4), v, fill=(30, 30, 30), font=font)
-        tiles.append(base.convert("RGB"))
-        os.remove(p)
-    if sheet and len(tiles) > 1:
-        cols = 2
-        rows = math.ceil(len(tiles) / cols)
-        grid = Image.new("RGB", (cols * panel, rows * panel), (200, 200, 200))
-        for i, t in enumerate(tiles):
-            grid.paste(t, ((i % cols) * panel, (i // cols) * panel))
-        img = grid
+    changes = []
+    if compare:
+        rows = []
+        for (v, im_new, _), (_v, im_old, _m) in zip(cur, old):
+            pct, bbox = _diff(im_old, im_new)
+            changes.append({"view": v, "pct": round(pct, 2), "bbox": bbox})
+            a = _tile(im_old, v + " · vorher", font, bg)
+            b = _tile(im_new, "{} · jetzt · Änderung {:.1f} %".format(v, pct), font, bg)
+            if bbox:
+                x0, y0, x1, y1 = bbox
+                ImageDraw.Draw(b).rectangle((max(0, x0 - 4), max(0, y0 - 4), min(b.width - 1, x1 + 4), min(b.height - 1, y1 + 4)),
+                                            outline=(220, 30, 30), width=2)
+            rows.append((a, b))
+        tw, th, gap = rows[0][0].width, rows[0][0].height, 4
+        img = Image.new("RGB", (2 * tw + gap, len(rows) * th + gap * (len(rows) - 1)), (255, 255, 255))
+        for i, (a, b) in enumerate(rows):
+            img.paste(a, (0, i * (th + gap)))
+            img.paste(b, (tw + gap, i * (th + gap)))
     else:
-        img = tiles[0]
-    faces = sum(mesh_stats(o, manifold=False).get("f", 0) for o in objs if o.type == "MESH")
-    names_txt = ", ".join(o.name for o in objs[:8]) + (" …" if len(objs) > 8 else "")
+        tiles = [_tile(im, v, font, bg) for v, im, _ in cur]
+        if sheet and len(tiles) > 1:
+            cols = 2
+            grid = Image.new("RGB", (cols * panel, math.ceil(len(tiles) / cols) * panel), (200, 200, 200))
+            for i, t in enumerate(tiles):
+                grid.paste(t, ((i % cols) * panel, (i // cols) * panel))
+            img = grid
+        else:
+            img = tiles[0]
+    mmpp = [m for _v, _i, m in cur if m is not None]
     legend = ["{} · Modus {} · 1 px = {} mm · Objekte {} · Faces {}".format(
-        "/".join(v for v, _ in paths), mode, "/".join("{:.3g}".format(x) for x in mmpp), len(objs), faces), names_txt]
-    strip_h = 2 * 16 + 8
+        "/".join(v for v, _i, _m in cur), mode, "/".join("{:.3g}".format(x) for x in mmpp) or "-", len(objs), faces), names_txt]
+    if compare:
+        mx = max(c["pct"] for c in changes)
+        legend.append("Vergleich mit {}: {}{}".format(
+            os.path.basename(os.path.dirname(os.path.dirname(compare))) + "/" + os.path.basename(compare),
+            ", ".join("{} {:.1f} %".format(c["view"], c["pct"]) for c in changes),
+            "  ⚠ kaum sichtbare Änderung (< 1 %)" if mx < 1 else ""))
+    strip_h = len(legend) * 16 + 8
     final = Image.new("RGB", (img.width, img.height + strip_h), (255, 255, 255))
     final.paste(img, (0, 0))
     dr = ImageDraw.Draw(final)
@@ -342,23 +471,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         dr.text((6, img.height + 4 + i * 16), ln, fill=(20, 20, 20), font=font_s)
     final.save(out)
     return {"path": out, "w": final.width, "h": final.height, "mm_per_px": [round(x, 4) for x in mmpp],
-            "views": [v for v, _ in paths], "objects": len(objs), "faces": faces}
-
-
-def _look_cam(out, panel):
-    scene = bpy.context.scene
-    if scene.camera is None:
-        raise RuntimeError("Szene hat keine Kamera (--mode cam braucht scene.camera)")
-    r = scene.render
-    saved = (r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath)
-    aspect = r.resolution_y / max(r.resolution_x, 1)
-    try:
-        r.resolution_x, r.resolution_y, r.resolution_percentage = panel, max(1, round(panel * aspect)), 100
-        r.filepath = out
-        bpy.ops.render.render(write_still=True)
-    finally:
-        r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath = saved
-    return {"path": out, "w": panel, "h": max(1, round(panel * aspect)), "views": ["cam"], "engine": r.engine}
+            "views": [v for v, _i, _m in cur], "objects": len(objs), "faces": faces,
+            "compare": compare, "changes": changes}
 
 
 # --------------------------------------------------------------------------- save

@@ -2,9 +2,16 @@
 # Set up bl (idempotent): Pillow + docutils into .deps/, documentation data into .docs/, symlink ~/bin/bl.
 # Machine config (optional): ${XDG_CONFIG_HOME:-$HOME/.config}/bl/env with plain `export VAR=...` lines.
 set -eu
+# Variables already set in the environment win over the file.
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/bl/env"
-# shellcheck disable=SC1090
-[ -f "$cfg" ] && . "$cfg"
+if [ -f "$cfg" ]; then
+  while IFS='=' read -r k v; do
+    k="${k#export }"; k="${k//[[:space:]]/}"
+    case "$k" in ''|\#*) continue ;; esac
+    [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [ -n "${!k+x}" ] || eval "export $k=$v"
+  done < "$cfg"
+fi
 here="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -n "${BL_BLENDER_DIR:-}" ]; then
   bdir="$BL_BLENDER_DIR"

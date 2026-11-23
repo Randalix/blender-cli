@@ -221,6 +221,20 @@ def _hide_others(scene, keep):
     return hidden
 
 
+def _split_ground(objs):
+    """Große flache Platten (Boden/Hintergrund) aus der Rahmung nehmen: flach (< 1 % Dicke) und > 4× so groß wie der Rest."""
+    if len(objs) < 2:
+        return objs, []
+    flat = [o for o in objs if max(o.dimensions) > 0 and min(o.dimensions) < 0.01 * max(o.dimensions)]
+    rest = [o for o in objs if o not in flat]
+    if not rest or not flat:
+        return objs, []
+    mn, mx = bbox_world(rest)
+    size = max((mx - mn).length, 1e-6)
+    ground = [o for o in flat if Vector(o.dimensions).length > 4 * size]
+    return [o for o in objs if o not in ground], ground
+
+
 def _append_ref(path, names, tmpdir):
     """Lädt die Geometrie-Objekte eines gespeicherten Stands temporär in die Szene. → (objekte, neue IDs zum Entfernen)."""
     import shutil
@@ -406,10 +420,15 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             if not ref:
                 raise RuntimeError("Vergleichsstand {} enthält keine passenden Geometrie-Objekte".format(compare))
         refp = {o.as_pointer() for o in ref}
+        ground = []
         if names:
             objs = [obj(n) for n in names]
         else:
             objs = [o for o in scene.objects if o.type in GEOM_TYPES and o.visible_get() and o.as_pointer() not in refp]
+            if mode != "cam":
+                objs, ground = _split_ground(objs)
+                if ref:
+                    ref, _g = _split_ground(ref)
         if not objs:
             raise RuntimeError("Nichts zu sehen: keine sichtbaren Geometrie-Objekte in der Szene")
         if mode == "cam":
@@ -421,6 +440,8 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             old = _render_views(out, ref, frame, views, mode, panel, "vorher") if compare else []
         faces = sum(mesh_stats(o, manifold=False).get("f", 0) for o in objs if o.type == "MESH")
         names_txt = ", ".join(o.name for o in objs[:8]) + (" …" if len(objs) > 8 else "")
+        if ground:
+            names_txt += "  (ohne Boden: {})".format(", ".join(o.name for o in ground))
     finally:
         if new_ids:
             bpy.data.batch_remove(new_ids)
@@ -472,7 +493,7 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
     final.save(out)
     return {"path": out, "w": final.width, "h": final.height, "mm_per_px": [round(x, 4) for x in mmpp],
             "views": [v for v, _i, _m in cur], "objects": len(objs), "faces": faces,
-            "compare": compare, "changes": changes}
+            "compare": compare, "changes": changes, "ground": [o.name for o in ground]}
 
 
 # --------------------------------------------------------------------------- save

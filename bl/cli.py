@@ -82,8 +82,8 @@ def cmd_version(a):
     st["version"] = v.name
     core.save_state(st)
     msg = "✓ Version {} (vorher {})".format(v.name, cur.name if cur else "-")
-    if worker_info():
-        r = call("result = bllib.save({!r})".format(str(v / "blend" / (pdir.name + ".blend"))))
+    if worker_info():  # Startstand als eigene Datei: `bl save` überschreibt ihn nicht, `--compare` findet ihn
+        r = call("result = bllib.save({!r})".format(str(v / "blend" / (pdir.name + "_start.blend"))))
         msg += "  Szene gespeichert → {}".format(rel(r["path"]))
     out(msg)
 
@@ -324,6 +324,8 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None):
         str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None))
     out("✓ Bild {}  {}×{} px (≈{} Token)  1 px = {} mm".format(
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
+    if r.get("ground"):
+        out("  Boden nicht gerahmt/gezeigt: {} (mit --obj gezielt wählen)".format(", ".join(r["ground"])))
     if ref:
         ch = r.get("changes") or []
         mx = max((c["pct"] for c in ch), default=0)

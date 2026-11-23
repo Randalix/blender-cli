@@ -298,5 +298,26 @@ o=$("$BL" docs bevel modifier --manual --hit 0 2>&1); check "docs: deepen a hit"
 o=$("$BL" docs xyzzyqq plugh 2>&1); rc=$?; check "docs: nothing found → exit 1" bash -c "[ $rc -eq 1 ]"
 o=$(BL_DOCS_DIR=/nonexistent "$BL" docs bevel 2>&1); rc=$?; check "docs: data missing → exit 3 with hint" bash -c "[ $rc -eq 3 ]"
 o=$("$BL" doctor); check "doctor" grep -q "Blender 5.2" <<<"$o"; check "doctor: PIL ok" grep -q "PIL in worker: ok" <<<"$o"; check "doctor: docs ok" has "docs \(bl docs\): ok \(api [0-9]+, manual [0-9]+ files\)"
+# --- live mode (bl gui / bl shot); the window part only with BL_TEST_DISPLAY (an own X display, never Joe's :0)
+o=$("$BL" shot 2>&1); rc=$?; check "shot without window: refused" bash -c "[ $rc -ne 0 ]"; check "shot without window: hint to bl gui" has "bl gui"
+if [ -n "${BL_TEST_DISPLAY:-}" ]; then
+  o=$("$BL" gui --empty --discard --display "$BL_TEST_DISPLAY" 2>&1); check "gui: starts with a window" has "window on display $BL_TEST_DISPLAY"
+  gpid=$(grep -o "pid [0-9]*" <<<"$o" | head -1 | cut -d' ' -f2)
+  o=$("$BL" run -e 'bpy.ops.mesh.primitive_monkey_add(); result={"bg": bpy.app.background, "n": len(bpy.data.objects)}'); check "gui: bl run in the window" has '"bg": false, "n": 1'
+  o=$("$BL" shot --frame Suzanne); check "gui: shot of the 3D view" has "shot-view-3d.png|_shot_view_3d|VIEW_3D on display"
+  img=$(grep -o "/[^ ]*\.png" <<<"$o")
+  o=$("$BL" run -e "from PIL import Image; im=Image.open('$img').convert('L'); result={'w': im.width, 'spread': im.getextrema()[1]-im.getextrema()[0]}")
+  check "gui: screenshot not empty" has '"spread": [0-9]{2,}'
+  o=$("$BL" shot --window --size 600); check "gui: shot of the window, scaled" has "600×[0-9]+ px" "window on display"
+  o=$("$BL" shot --area NO_SUCH 2>&1); check "gui: unknown area names the existing ones" has "VIEW_3D"
+  o=$("$BL" look --size 300); check "gui: bl look works in the window" has "image .*iso"
+  o=$("$BL" doctor); check "gui: doctor shows the window" has "window on $BL_TEST_DISPLAY"
+  o=$("$BL" close 2>&1); check "gui: close refuses with unsaved work" has "unsaved changes"
+  o=$("$BL" close --discard); sleep 1; check "gui: close --discard ends Blender" bash -c "! kill -0 $gpid 2>/dev/null"
+  "$BL" open --empty >/dev/null 2>&1
+  o=$("$BL" run -e 'result={"bg": bpy.app.background}'); check "after gui: background worker again" has '"bg": true'
+else
+  echo "  skip live mode (set BL_TEST_DISPLAY to an X display with GLX, not :0)"
+fi
 [ $fail -eq 0 ] && echo "== selftest OK" || echo "== selftest FAILED"
 exit $fail

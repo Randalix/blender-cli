@@ -23,6 +23,7 @@ _quit = False
 _reports = []
 _cam_device = None  # device of the last Cycles render (legend)
 _changed = False  # has a script run since start/last save? (otherwise bl open switches without asking)
+_gui = False  # bl gui: Blender with a window; edits by hand count as changes too
 GEOM_TYPES = {"MESH", "CURVE", "SURFACE", "META", "FONT", "CURVES", "POINTCLOUD", "VOLUME"}
 FONT_PATHS = ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
@@ -33,7 +34,9 @@ def _request_quit():
 
 
 def changed():
-    return _changed
+    """Unsaved work? Script runs since the last save; with a window also edits by hand (bpy.data.is_dirty;
+    bl look leaves it set too, so after looking `bl open` asks for --discard: safer for edits by hand)."""
+    return _changed or (_gui and bpy.data.is_dirty)
 
 
 # --------------------------------------------------------------------------- script API
@@ -1179,6 +1182,91 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None)
     return {"pass": not errors, "profile": profile, "errors": errors, "warnings": warnings, "objects": per,
             "ground": [o.name for o in ground], "tris": total, "budget": budget,
             "ground_z": min(gz) if gz else None, "per_object": not names}
+
+
+# --------------------------------------------------------------------------- shot (bl gui)
+
+def _draw_view3d(area):
+    """Draw a 3D view offscreen as it is shown (shading, overlays, view), independent of the screen: under a
+    compositor (picom on Huff :0) or with a blanked screen the window screenshot is black (measured 23.11.). → PIL RGB"""
+    import gpu
+    from PIL import Image
+    reg = next(r for r in area.regions if r.type == "WINDOW")
+    sp = area.spaces.active
+    rv = sp.region_3d
+    w, h = reg.width, reg.height
+    off = gpu.types.GPUOffScreen(w, h)
+    try:
+        off.draw_view3d(bpy.context.scene, bpy.context.view_layer, sp, reg, rv.view_matrix, rv.window_matrix,
+                        do_color_management=True)
+        with off.bind():
+            buf = gpu.state.active_framebuffer_get().read_color(0, 0, w, h, 4, 0, "UBYTE")
+    finally:
+        off.free()
+    buf.dimensions = w * h * 4
+    return Image.frombytes("RGBA", (w, h), bytes(buf)).transpose(Image.FLIP_TOP_BOTTOM).convert("RGB")
+
+
+def shot(out, area="VIEW_3D", window=False, frame=None, max_w=1024):
+    """Screenshot of the Blender window or of its largest area of type `area` (ui_type) → PNG at out.
+    The 3D view is drawn offscreen (works under a compositor too); window and other areas come from the screen.
+    frame=[names]: frame the 3D view on these objects first (selection is restored)."""
+    from PIL import Image
+    if bpy.app.background:
+        raise RuntimeError("bl shot needs Blender with a window: `bl gui` (the worker runs in the background)")
+    wm = bpy.context.window_manager
+    win = bpy.context.window or (wm.windows[0] if wm.windows else None)
+    if win is None:
+        raise RuntimeError("no Blender window")
+    areas = sorted((a for a in win.screen.areas if a.ui_type == area), key=lambda a: -(a.width * a.height))
+    if not window and not areas:
+        raise RuntimeError("no area {} in the window; there are: {}".format(
+            area, ", ".join(sorted({a.ui_type for a in win.screen.areas}))))
+    a = areas[0] if areas else None
+    if frame:
+        v3d = next(iter(sorted((x for x in win.screen.areas if x.type == "VIEW_3D"), key=lambda x: -(x.width * x.height))), None)
+        if v3d is None:
+            raise RuntimeError("--frame needs a 3D view in the window")
+        objs = [obj(n) for n in frame]
+        vl = bpy.context.view_layer
+        sel = [o for o in vl.objects if o.select_get()]
+        act = vl.objects.active
+        reg = next(r for r in v3d.regions if r.type == "WINDOW")
+        try:
+            for o in sel:
+                o.select_set(False)
+            for o in objs:
+                o.select_set(True)
+            with bpy.context.temp_override(window=win, area=v3d, region=reg):
+                bpy.ops.view3d.view_selected()
+        finally:
+            for o in objs:
+                o.select_set(False)
+            for o in sel:
+                o.select_set(True)
+            vl.objects.active = act
+    bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)  # draw the current state before capturing
+    if not window and area == "VIEW_3D":
+        im = _draw_view3d(a)
+    else:
+        tmp = out + ".tmp.png"
+        if window:
+            with bpy.context.temp_override(window=win):
+                bpy.ops.screen.screenshot(filepath=tmp)
+        else:
+            with bpy.context.temp_override(window=win, area=a):
+                bpy.ops.screen.screenshot_area(filepath=tmp)
+        im = Image.open(tmp).convert("RGB")
+        os.remove(tmp)
+        if im.convert("L").getextrema()[1] == 0:
+            raise RuntimeError("the screenshot is black: Blender reads the window from the screen, and a compositor "
+                               "(picom on Huff :0) or a blanked screen returns black. The 3D view always works: "
+                               "`bl shot` without --window/--area")
+    if max_w and im.width > max_w:
+        im = im.resize((max_w, max(1, round(im.height * max_w / im.width))), Image.LANCZOS)
+    im.save(out)
+    return {"path": out, "w": im.width, "h": im.height, "what": "window" if window else area,
+            "blend": bpy.data.filepath or None}
 
 
 # --------------------------------------------------------------------------- save

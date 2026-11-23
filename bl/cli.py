@@ -161,7 +161,27 @@ def _autosave_hint(sd, implicit):
     out("⚠ The last worker ended while idle with unsaved changes; backup: {}  (`bl open {}`)".format(dst, dst))
 
 
-def start_worker(blend=None, quiet=False, implicit=False):
+def gui_display():
+    return os.environ.get("BL_GUI_DISPLAY", ":0")
+
+
+def gui_userres():
+    """Own Blender user resources for bl gui (never Joe's own config): preferences with the splash off, otherwise
+    the first-start splash covers the viewport (seen in the first test). Created once."""
+    d = core.state_base() / "gui-userres"
+    if not list(d.glob("**/userpref.blend")):
+        d.mkdir(parents=True, exist_ok=True)
+        env = {k: v for k, v in os.environ.items() if k not in ("LD_LIBRARY_PATH", "DISPLAY")}
+        env["BLENDER_USER_RESOURCES"] = str(d)
+        code = ("import bpy; p = bpy.context.preferences; p.view.show_splash = False; "
+                "p.use_preferences_save = False; bpy.ops.wm.save_userpref()")
+        subprocess.run([blender_exe(), "-b", "--factory-startup", "--python-expr", code], env=env,
+                       capture_output=True, timeout=120)
+    return d
+
+
+def start_worker(blend=None, quiet=False, implicit=False, gui=None):
+    """gui=display (e.g. ':0'): Blender with a window on that X display (bl gui), else headless (-b)."""
     sd = core.state_dir()
     if not os.path.exists(blender_exe()):
         raise Fail("✗ Blender not found at {}: set BL_BLENDER_DIR or put 'blender' on PATH".format(blender_exe()), 3)
@@ -173,10 +193,17 @@ def start_worker(blend=None, quiet=False, implicit=False):
         _autosave_hint(sd, implicit)
     port = _free_port()
     log = sd / "worker.log"
-    cmd = [blender_exe(), "-b"] + ([str(blend)] if blend else []) + [
-        "--factory-startup", "--python-exit-code", "1", "-P", str(REPO / "bl" / "blender" / "boot.py"), "--",
-        "--port", str(port), "--idle", str(IDLE), "--repo", str(REPO), "--autosave", str(sd / "autosave.blend")] + ([] if blend else ["--empty"])
+    cmd = [blender_exe()] + ([] if gui else ["-b"]) + ([str(blend)] if blend else []) + \
+        ([] if gui else ["--factory-startup"]) + ["--python-exit-code", "1", "-P", str(REPO / "bl" / "blender" / "boot.py"), "--",
+        "--port", str(port), "--idle", str(IDLE), "--repo", str(REPO), "--autosave", str(sd / "autosave.blend")] + \
+        ([] if blend else ["--empty"]) + (["--gui"] if gui else [])
     env = {k: v for k, v in os.environ.items() if k not in ("LD_LIBRARY_PATH", "DISPLAY", "PYTHONPATH", "PYTHONHOME")}
+    if gui:
+        env["DISPLAY"] = gui
+        env["BLENDER_USER_RESOURCES"] = str(gui_userres())
+        xa = Path.home() / ".Xauthority"
+        if "XAUTHORITY" not in env and xa.is_file():
+            env["XAUTHORITY"] = str(xa)
     t0 = time.time()
     with open(log, "w") as fh:
         p = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env,
@@ -194,10 +221,13 @@ def start_worker(blend=None, quiet=False, implicit=False):
     else:
         os.kill(p.pid, signal.SIGTERM)
         raise Fail("worker not reachable after timeout, log: {}".format(log), 3)
-    w = {"pid": p.pid, "port": port, "blend": str(blend) if blend else None, "started": time.time(), "log": str(log)}
+    w = {"pid": p.pid, "port": port, "blend": str(blend) if blend else None, "started": time.time(), "log": str(log),
+         "gui": gui}
     (sd / "worker.json").write_text(json.dumps(w))
     if not quiet:
-        out("✓ worker pid {} port {} ({:.1f} s) scene {}".format(p.pid, port, time.time() - t0, rel(blend) if blend else "empty"))
+        out("✓ worker pid {} port {} ({:.1f} s) scene {}{}".format(
+            p.pid, port, time.time() - t0, rel(blend) if blend else "empty",
+            "  · window on display {} (no idle timeout; bl close ends it)".format(gui) if gui else ""))
     return w
 
 
@@ -260,6 +290,11 @@ def worker_changed(w):
     return v if isinstance(v, bool) else None
 
 
+def cmd_gui(a):
+    a.gui = a.display or gui_display()
+    cmd_open(a)
+
+
 def cmd_open(a):
     # check the target first: a typo must not end the running worker
     if a.empty:
@@ -279,7 +314,7 @@ def cmd_open(a):
             raise Fail("✗ open scene {} (worker pid {}, scene {}): `bl save` first, or `bl open … --discard`".format(
                 why, w["pid"], rel(w["blend"]) if w["blend"] else "empty"))
         cmd_close(argparse.Namespace(save=False, discard=True))
-    start_worker(blend)
+    start_worker(blend, gui=getattr(a, "gui", None))
 
 
 def cmd_close(a):
@@ -434,6 +469,22 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
         if mx < 1:
             out("  ⚠ barely visible change (< 1 % of the object area): does the change have any effect? Do not report it as a visible improvement.")
     return r
+
+
+def cmd_shot(a):
+    w = worker_info()
+    if not (w and w.get("gui")):
+        raise Fail("✗ bl shot needs Blender with a window: `bl gui` first (now: {})".format(
+            "background worker pid {}".format(w["pid"]) if w else "no worker"))
+    _pdir, vdir = active()
+    prev = vdir / "preview"
+    prev.mkdir(parents=True, exist_ok=True)
+    stem = a.out or ("shot_window" if a.window else "shot_" + a.area.lower())
+    path = core.next_numbered(prev, stem, ".png")
+    r = call("result = bllib.shot({!r}, area={!r}, window={}, frame={!r}, max_w={})".format(
+        str(path), a.area, bool(a.window), a.frame, a.size))
+    out("✓ image {}  {}×{} px (≈{} tokens)  {} on display {}".format(
+        r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), r["what"], w["gui"]))
 
 
 def cmd_light(a):
@@ -598,8 +649,9 @@ def cmd_doctor(a):
     for sd in sorted(base.iterdir()) if base.is_dir() else []:
         w = worker_info(sd)
         if w:
-            ws.append("  {} pid {} port {} scene {} for {:.0f} min".format(
-                sd.name, w["pid"], w["port"], rel(w["blend"]) if w["blend"] else "empty", (time.time() - w["started"]) / 60))
+            ws.append("  {} pid {} port {} scene {} for {:.0f} min{}".format(
+                sd.name, w["pid"], w["port"], rel(w["blend"]) if w["blend"] else "empty", (time.time() - w["started"]) / 60,
+                "  · window on {}".format(w["gui"]) if w.get("gui") else ""))
     out("workers: {}".format(len(ws)), *ws)
     sk = Path.home() / ".claude" / "skills"
     names = sorted(p.name for p in sk.iterdir() if p.name.startswith("blender")) if sk.is_dir() else []
@@ -634,6 +686,21 @@ def build_parser():
     p.add_argument("--empty", action="store_true", help="empty scene instead of the newest file")
     p.add_argument("--discard", action="store_true", help="switch the running worker even with unsaved changes")
     p.set_defaults(fn=cmd_open)
+    p = sp.add_parser("gui", help="like open, but Blender with a window (live mode): Joe watches and can edit; "
+                                  "every bl command works unchanged")
+    p.add_argument("blend", nargs="?")
+    p.add_argument("--empty", action="store_true", help="empty scene instead of the newest file")
+    p.add_argument("--discard", action="store_true", help="switch the running worker even with unsaved changes")
+    p.add_argument("--display", help="X display (default $BL_GUI_DISPLAY or :0)")
+    p.set_defaults(fn=cmd_gui)
+    p = sp.add_parser("shot", help="screenshot of the Blender window (bl gui) into preview/")
+    p.add_argument("--area", default="VIEW_3D", help="area ui_type: VIEW_3D (default), OUTLINER, PROPERTIES, "
+                                                       "ShaderNodeTree, GeometryNodeTree, …")
+    p.add_argument("--window", action="store_true", help="the whole window instead of one area")
+    p.add_argument("--frame", action="append", metavar="OBJ", help="frame the 3D view on this object first (repeatable)")
+    p.add_argument("--size", type=int, default=1024, help="max width in px (default 1024)")
+    p.add_argument("--out", help="name in the image journal")
+    p.set_defaults(fn=cmd_shot)
     p = sp.add_parser("close", help="stop the worker")
     p.add_argument("--save", action="store_true", help="save first")
     p.add_argument("--discard", action="store_true", help="stop even with unsaved changes")

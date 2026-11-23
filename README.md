@@ -37,6 +37,7 @@ One run per variant, so treat the numbers as an indication, not a benchmark.
 - **Seeing with evidence:** `bl look` renders a sheet (iso/front/right/top), a wireframe, a section cut, a closeup or the scene camera. Each image comes with a legend (mm per px) and a scale bar. `--compare` puts the version's start state next to the current state and reports the changed pixels in %. It warns when a change is barely visible.
 - **Surface inspection:** `bl look --mode zebra` reflects black/white stripes like a paint inspection tunnel, `--mode facing` paints hue bands of the normal angle. Both follow the shading normal, so dents, kinks and shading breaks that `solid` hides become obvious (a 0.8 mm dent on an 80 mm sphere, or smooth shading bleeding into a flat face).
 - **Light and exposure:** `bl light studio` sets a key/fill/rim rig scaled to the object, so the first camera render of a 10 cm mug or a 10 m house is exposed the same. Every `bl look --mode cam` reports exposure from a gray-card pass (same camera and lights, neutral gray material), which does not depend on the object's color, and warns when the image is over- or underexposed.
+- **Live mode:** `bl gui` starts Blender with a window instead of the background worker; every `bl` command works unchanged, and a person can watch and edit along. Edits by hand count as unsaved work, so `bl open`/`bl close` will not drop them. `bl shot [--frame OBJ]` captures the 3D view (drawn offscreen, so it also works under a compositor or with a blanked screen); `--window` and `--area OUTLINER|…` capture from the screen.
 - **Numbers:** `bl info` summarizes the scene. `mesh_stats()` and `bl.hits()` are available inside scripts. `bl qa --profile game|render|print` checks with [EL4CTEO/blender-skills](https://github.com/EL4CTEO/blender-skills) `qa_check` plus broken faces and a poly budget.
 - **Offline API docs:** `bl docs bpy.types.Object.matrix_world` gives the signature and description matching Blender 5.2, from the official MCP's documentation data.
 - **Safety nets:** `bl` refuses to drop unsaved runs and auto-saves when the idle timeout ends the worker. Exit codes are stable: 0 ok, 1 finding, 2 script error, 3 worker/Blender.
@@ -75,7 +76,7 @@ bl doctor
 
 `bl qa` uses `qa_check.py` from [EL4CTEO/blender-skills](https://github.com/EL4CTEO/blender-skills). By default it is looked up in `~/repos/blender-skills`; set `BL_QA_DIR` to point elsewhere.
 
-Other variables: `BL_SESSION` (worker per session; defaults to `default`), `BL_IDLE` (idle timeout in s, default 900).
+Other variables: `BL_SESSION` (worker per session; defaults to `default`), `BL_IDLE` (idle timeout in s, default 900), `BL_GUI_DISPLAY` (X display for `bl gui`, default `:0`; `bl gui` uses its own Blender preferences under the state directory, never yours).
 
 ### Use with Claude Code
 
@@ -89,6 +90,7 @@ The skill tells the agent when to use which command.
 ```bash
 "$BLENDER_PY" -m unittest tests/test_bl.py   # Blender's bundled python
 bash tests/selftest.sh                       # end-to-end against a real worker
+BL_TEST_DISPLAY=:81 bash tests/selftest.sh   # plus live mode, on an X display of its own (needs GLX)
 ```
 
 ## License

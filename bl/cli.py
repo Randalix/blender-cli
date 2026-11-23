@@ -224,8 +224,14 @@ def call(code, timeout=600, prefer_file=None):
 def cmd_open(a):
     w = worker_info()
     if w:
-        out("Worker läuft schon: pid {} port {} Szene {} — `bl close` zuerst".format(w["pid"], w["port"], rel(w["blend"]) if w["blend"] else "leer"))
-        return
+        try:
+            changed = send(w["port"], "import bllib\nresult = {'changed': bllib.changed()}", 10).get("result", {}).get("changed")
+        except Fail:
+            changed = None
+        if changed and not a.verwerfen:
+            raise Fail("✗ offene Szene hat ungespeicherte Änderungen (Worker pid {}, Szene {}): erst `bl save`, "
+                       "oder `bl open … --verwerfen`".format(w["pid"], rel(w["blend"]) if w["blend"] else "leer"))
+        cmd_close(argparse.Namespace(save=False))
     if a.leer:
         blend = None
     elif a.blend:
@@ -265,28 +271,42 @@ def cmd_run(a):
     _pdir, vdir = active()
     sk = vdir / "skripte"
     sk.mkdir(parents=True, exist_ok=True)
+    try:
+        args = core.parse_set(a.set)
+    except ValueError as ex:
+        raise Fail("✗ " + str(ex))
     if a.e is not None:
-        src, stem = a.e, a.name or "schritt"
+        jobs = [(a.e, a.name or "schritt")]
     else:
-        f = Path(a.script)
-        if not f.is_file():
-            raise Fail("Skript fehlt: {}".format(f))
-        src, stem = f.read_text(encoding="utf-8"), a.name or f.stem
-    j = core.next_numbered(sk, stem, ".py")
-    j.write_text(src if src.endswith("\n") else src + "\n", encoding="utf-8")
-    t0 = time.time()
-    r = call("result = bllib.run_file({!r})".format(str(j)), timeout=a.timeout, prefer_file=str(j))
-    out("✓ {} ({:.2f} s)".format(rel(j), time.time() - t0))
-    if r.get("_stdout"):
-        out(*core.clip_lines(("  | " + ln for ln in r["_stdout"].rstrip().splitlines()), a.lines))
-    res = r.get("result") or {}
-    if res:
-        out("  result " + core.clip_text(json.dumps(res, ensure_ascii=False), 400))
-    if a.report:
-        reps = r.get("reports") or []
-        out(*(["  " + ln for ln in core.clip_lines(reps, 20)] if reps else ["  (nichts markiert: report(obj) im Skript)"]))
+        jobs = []
+        for sc in a.scripts:
+            f = Path(sc)
+            if not f.is_file():
+                raise Fail("Skript fehlt: {}".format(f))
+            jobs.append((f.read_text(encoding="utf-8"), a.name if (a.name and len(a.scripts) == 1) else f.stem))
+    reported = []
+    for i, (src, stem) in enumerate(jobs):
+        j, neu = core.journal_file(sk, stem, src)
+        t0 = time.time()
+        try:
+            r = call("result = bllib.run_file({!r}, {!r})".format(str(j), args), timeout=a.timeout, prefer_file=str(j))
+        except Fail as ex:
+            if len(jobs) > 1:
+                ex.args = (str(ex) + "\n  Kette abgebrochen bei Skript {}/{}; nicht ausgeführt: {}".format(
+                    i + 1, len(jobs), ", ".join(st for _s, st in jobs[i + 1:]) or "-"),)
+            raise
+        out("✓ {}{} ({:.2f} s)".format(rel(j), "" if neu else " (unverändert, wiederverwendet)", time.time() - t0))
+        if r.get("_stdout"):
+            out(*core.clip_lines(("  | " + ln for ln in r["_stdout"].rstrip().splitlines()), a.lines))
+        res = r.get("result") or {}
+        if res:
+            out("  result " + core.clip_text(json.dumps(res, ensure_ascii=False), 400))
+        if a.report:
+            reps = r.get("reports") or []
+            out(*(["  " + ln for ln in core.clip_lines(reps, 20)] if reps else ["  (nichts markiert: report(obj) im Skript)"]))
+        reported += [n for n in r.get("reported") or [] if n not in reported]
     if a.look:
-        do_look(names=r.get("reported") or None, views=["iso"], mode="solid", size=a.size, sheet=False)
+        do_look(names=reported or None, views=["iso"], mode="solid", size=a.size, sheet=False)
 
 
 def cmd_info(a):
@@ -315,7 +335,8 @@ def compare_ref(arg, pdir, vdir):
     return ref
 
 
-def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=None, radius=None):
+def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=None, radius=None, section=None,
+            engine=None, samples=None):
     pdir, vdir = active()
     vor = vdir / "vorschau"
     vor.mkdir(parents=True, exist_ok=True)
@@ -323,12 +344,15 @@ def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=N
     ref = compare_ref(compare, pdir, vdir) if compare else None
     if focus and label == "look":
         stem += "_ausschnitt"
+    if section and label == "look":
+        stem = "schnitt-" + section.replace("=", "").replace(".", "_") + ("_" + mode if mode != "solid" else "")
     if ref:
         stem += "_vergleich" if label == "look" else ""
     path = core.next_numbered(vor, stem, ".png")
     panel = size // 2 if (sheet or ref) else size
-    r = call("result = bllib.look({!r}, views={!r}, names={!r}, mode={!r}, panel={}, sheet={}, compare={!r}, focus={!r}, radius_mm={!r})".format(
-        str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius))
+    r = call("result = bllib.look({!r}, views={!r}, names={!r}, mode={!r}, panel={}, sheet={}, compare={!r}, focus={!r}, radius_mm={!r}, "
+             "section={!r}, engine={!r}, samples={!r})".format(
+                 str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius, section, engine, samples))
     out("✓ Bild {}  {}×{} px (≈{} Token)  1 px = {} mm".format(
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
     if r.get("empty"):
@@ -350,8 +374,17 @@ def cmd_look(a):
     else:
         views = a.view or ["iso"]
     names = a.obj or None
-    do_look(names, views, a.mode, a.size, a.sheet or len(views) > 1, label=a.out or "look", compare=a.compare,
-            focus=a.focus, radius=a.radius)
+    if a.section:
+        try:
+            core.parse_section(a.section)
+        except ValueError as ex:
+            raise Fail("✗ " + str(ex))
+        if a.sheet or a.view or a.mode == "cam":
+            raise Fail("✗ --section wählt die Blickrichtung selbst (senkrecht auf den Schnitt): ohne --sheet/--view/--mode cam")
+    if (a.engine or a.samples) and a.mode != "cam":
+        raise Fail("✗ --engine/--samples nur mit --mode cam")
+    do_look(names, views, a.mode, a.size, (a.sheet or len(views) > 1) and not a.section, label=a.out or "look",
+            compare=a.compare, focus=a.focus, radius=a.radius, section=a.section, engine=a.engine, samples=a.samples)
 
 
 def cmd_save(a):
@@ -436,12 +469,14 @@ def build_parser():
     p = sp.add_parser("open", help="Worker starten (Standard: neueste .blend der aktiven Version)")
     p.add_argument("blend", nargs="?")
     p.add_argument("--leer", action="store_true", help="leere Szene statt neuester Datei")
+    p.add_argument("--verwerfen", action="store_true", help="laufenden Worker auch mit ungespeicherten Änderungen umschalten")
     p.set_defaults(fn=cmd_open)
     p = sp.add_parser("close", help="Worker beenden")
     p.add_argument("--save", action="store_true", help="vorher speichern")
     p.set_defaults(fn=cmd_close)
-    p = sp.add_parser("run", help="Skript in der offenen Szene ausführen (wird nach skripte/ protokolliert)")
-    p.add_argument("script", nargs="?")
+    p = sp.add_parser("run", help="Skript(e) in der offenen Szene ausführen, nacheinander (wird nach skripte/ protokolliert)")
+    p.add_argument("scripts", nargs="*", metavar="skript.py")
+    p.add_argument("--set", action="append", metavar="NAME=WERT", help="Parameter fürs Skript als args[NAME] (Wert als JSON, sonst Text)")
     p.add_argument("-e", metavar="CODE", help="Code direkt statt Datei")
     p.add_argument("--name", help="Name im Skript-Protokoll")
     p.add_argument("--report", action="store_true", help="Messwerte der mit report() markierten Objekte")
@@ -467,6 +502,9 @@ def build_parser():
                         "'last': zuletzt per bl save gespeicherter Stand, sonst Pfad")
     p.add_argument("--focus", metavar="OBJ|x,y,z", help="Ausschnitt um ein Objekt oder einen Punkt x,y,z in mm")
     p.add_argument("--radius", type=float, metavar="MM", help="Radius des Ausschnitts in mm")
+    p.add_argument("--section", metavar="x|y|z=MM", help="Schnitt an der Ebene (mm), Blick senkrecht darauf; Schnittfläche rot")
+    p.add_argument("--engine", choices=["eevee", "cycles", "workbench"], help="nur --mode cam: Engine für dieses Bild")
+    p.add_argument("--samples", type=int, help="nur --mode cam: Samples (EEVEE/Cycles) für dieses Bild")
     p.set_defaults(fn=cmd_look)
     p = sp.add_parser("save", help="Szene in blend/ der aktiven Version speichern")
     p.add_argument("--as", help="Dateiname (ohne .blend)")
@@ -478,8 +516,8 @@ def build_parser():
 
 def main(argv=None):
     a = build_parser().parse_args(argv)
-    if a.cmd == "run" and (a.script is None) == (a.e is None):
-        print("✗ bl run: genau eins von <skript.py> oder -e CODE", file=sys.stderr)
+    if a.cmd == "run" and bool(a.scripts) == (a.e is not None):
+        print("✗ bl run: <skript.py …> oder -e CODE (nicht beides)", file=sys.stderr)
         return 2
     try:
         a.fn(a)

@@ -57,6 +57,40 @@ class CoreTest(unittest.TestCase):
         self.assertTrue(core.error_line(tb).startswith("bllib.py:30"))
         self.assertEqual(core.error_line("SyntaxError: x"), "SyntaxError: x")
 
+    def test_journal_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            j1, n1 = core.journal_file(p, "Körper", "a = 1")
+            self.assertEqual((j1.name, n1), ("001_koerper.py", True))
+            self.assertEqual(j1.read_text(), "a = 1\n")
+            j2, n2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt → wiederverwendet
+            self.assertEqual((j2, n2), (j1, False))
+            j3, n3 = core.journal_file(p, "henkel", "b = 2")
+            self.assertEqual((j3.name, n3), ("002_henkel.py", True))
+            j4, n4 = core.journal_file(p, "Körper", "a = 1")  # letzte koerper-Datei ist 001 → wiederverwendet
+            self.assertEqual((j4.name, n4), ("001_koerper.py", False))
+            j5, n5 = core.journal_file(p, "Körper", "a = 2")
+            self.assertEqual((j5.name, n5), ("003_koerper.py", True))
+            j6, n6 = core.journal_file(p, "Körper", "a = 1")  # Vergleich nur mit der letzten Fassung
+            self.assertEqual((j6.name, n6), ("004_koerper.py", True))
+            (p / "005_koerper-alt.py").write_text("a = 2\n")  # anderer Stamm zählt nicht
+            self.assertEqual(core.journal_file(p, "koerper", "a = 1")[1], False)
+
+    def test_parse_set(self):
+        self.assertEqual(core.parse_set(["n=3", "f=0.5", "l=[1,2]", "s=abc", "t=true", "leer="]),
+                         {"n": 3, "f": 0.5, "l": [1, 2], "s": "abc", "t": True, "leer": ""})
+        self.assertEqual(core.parse_set(None), {})
+        for bad in ("ohne", "1x=2", "=3"):
+            with self.assertRaises(ValueError):
+                core.parse_set([bad])
+
+    def test_parse_section(self):
+        self.assertEqual(core.parse_section("x=0"), ("x", 0.0))
+        self.assertEqual(core.parse_section(" z = -12.5"), ("z", -12.5))
+        for bad in ("x0", "w=1", "y=abc", ""):
+            with self.assertRaises(ValueError):
+                core.parse_section(bad)
+
     def test_clip(self):
         self.assertEqual(core.clip_lines(range(5), 3), [0, 1, 2, "… +2 weitere Zeilen"])
         self.assertEqual(core.clip_text("abcdef", 4), "abc…")

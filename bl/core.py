@@ -85,6 +85,47 @@ def next_numbered(d: Path, stem: str, ext: str) -> Path:
     return d / "{:03d}_{}{}".format(n + 1, clean_label(stem), ext)
 
 
+def journal_file(d: Path, stem: str, src: str):
+    """Skript ins Journal d schreiben. Gleicht der Inhalt der letzten Datei NNN_<stem>.py, wird diese wiederverwendet.
+    → (pfad, neu_geschrieben)"""
+    src = src if src.endswith("\n") else src + "\n"
+    st = clean_label(stem)
+    last = None
+    if d.is_dir():
+        same = [f for f in d.iterdir() if re.match(r"^\d{3,}_" + re.escape(st) + r"\.py$", f.name)]
+        last = max(same, key=lambda f: int(f.name.split("_", 1)[0])) if same else None
+    if last is not None and last.read_text(encoding="utf-8") == src:
+        return last, False
+    j = next_numbered(d, stem, ".py")
+    j.write_text(src, encoding="utf-8")
+    return j, True
+
+
+def parse_set(items) -> dict:
+    """--set k=v (mehrfach) → Dict. Werte als JSON, sonst Text: n=3 → 3, f=0.5 → 0.5, l=[1,2] → Liste, s=abc → 'abc'."""
+    out = {}
+    for it in items or []:
+        k, sep, v = it.partition("=")
+        if not sep or not k.strip().isidentifier():
+            raise ValueError("--set braucht name=wert, nicht {!r}".format(it))
+        try:
+            out[k.strip()] = json.loads(v)
+        except ValueError:
+            out[k.strip()] = v
+    return out
+
+
+def parse_section(s: str):
+    """'x=0' / 'y=-12.5' / 'z=40' (mm) → ('x', 0.0)."""
+    ax, sep, v = (s or "").replace(" ", "").partition("=")
+    try:
+        if not sep or ax not in ("x", "y", "z"):
+            raise ValueError
+        return ax, float(v)
+    except ValueError:
+        raise ValueError("--section braucht x=MM, y=MM oder z=MM, nicht {!r}".format(s))
+
+
 def newest_blend(projdir: Path, start_at: Path = None):
     """Neueste .blend: erst in der Version start_at, dann rückwärts durch ältere Versionen."""
     vs = versions(projdir)

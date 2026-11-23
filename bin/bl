@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
-# bl — Blender-CLI fuer Agenten (headless, ohne MCP). Laeuft mit dem Python von Blender 5.2.4 (numpy, PIL).
-# Hilfe: bl --help · Doku im Wiki: Blender/Plans/bl Phase 1 — Kern (Plan)
+# bl — Blender CLI for agents (headless, no MCP). Runs on Blender's bundled Python (numpy, PIL from .deps).
+# Help: bl --help
+# Machine config (optional): ${XDG_CONFIG_HOME:-$HOME/.config}/bl/env with plain `export VAR=...` lines
+# (BL_ROOT, BL_BLENDER_DIR, BL_DOCS_SRC, ...).
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/bl/env"
+# shellcheck disable=SC1090
+[ -f "$cfg" ] && . "$cfg"
 here="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-bdir="${BL_BLENDER_DIR:-/mnt/caches/ComfyUI/_tools/blender-5.2.4-linux-x64}"
+if [ -n "${BL_BLENDER_DIR:-}" ]; then
+  bdir="$BL_BLENDER_DIR"
+elif command -v blender >/dev/null 2>&1; then
+  bdir="$(dirname "$(readlink -f "$(command -v blender)")")"
+else
+  echo "✗ Blender not found: set BL_BLENDER_DIR (directory of the official Blender archive) or put 'blender' on PATH" >&2
+  exit 3
+fi
 py="$(ls "$bdir"/*/python/bin/python3.* 2>/dev/null | head -1)"
-[ -x "$py" ] || { echo "✗ Blender-Python nicht gefunden unter $bdir" >&2; exit 3; }
+[ -x "$py" ] || { echo "✗ Blender's bundled Python not found under $bdir (expected <version>/python/bin/python3.*; use the official archive from blender.org)" >&2; exit 3; }
 exec env -u LD_LIBRARY_PATH -u PYTHONPATH -u PYTHONHOME PYTHONDONTWRITEBYTECODE=1 \
   BL_REPO="$here" BL_BLENDER_DIR="$bdir" "$py" -s "$here/bl/cli.py" "$@"

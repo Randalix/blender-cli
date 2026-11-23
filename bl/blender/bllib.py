@@ -1,10 +1,10 @@
-"""bllib — läuft im bl-Worker (Blender). Skripte haben ohne Import: bpy, bl (dieses Modul), report, obj, mesh_stats, Vector.
+"""bllib — runs inside the bl worker (Blender). Scripts get without import: bpy, bl (this module), report, obj, mesh_stats, Vector.
 
-Wichtig für Skript-Autoren:
-- result = {...} setzen, um Werte (JSON) zurückzugeben; print() kommt gekürzt zurück.
-- report(obj_oder_name, ...) markiert Objekte für `bl run --report` und `--look`.
-- args: Dict aus `bl run --set name=wert` (leer ohne --set); args.get("n", 3) für Vorgaben.
-- bl.hits(von_mm, richtung): Trefferpunkte (mm) eines Strahls durch die sichtbaren Netze.
+For script authors:
+- set result = {...} to return values (JSON); print() output comes back clipped.
+- report(obj_or_name, ...) marks objects for `bl run --report` and `--look`.
+- args: dict from `bl run --set name=value` (empty without --set); args.get("n", 3) for defaults.
+- bl.hits(from_mm, direction): hit points (mm) of a ray through the visible meshes.
 """
 import json
 import math
@@ -19,8 +19,8 @@ from mathutils.kdtree import KDTree
 
 _quit = False
 _reports = []
-_cam_device = None  # Gerät des letzten Cycles-Renders (Legende)
-_changed = False  # seit Start/letztem save ein Skript gelaufen? (bl open schaltet sonst ohne Rückfrage um)
+_cam_device = None  # device of the last Cycles render (legend)
+_changed = False  # has a script run since start/last save? (otherwise bl open switches without asking)
 GEOM_TYPES = {"MESH", "CURVE", "SURFACE", "META", "FONT", "CURVES", "POINTCLOUD", "VOLUME"}
 FONT_PATHS = ("/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
@@ -34,13 +34,13 @@ def changed():
     return _changed
 
 
-# --------------------------------------------------------------------------- Skript-API
+# --------------------------------------------------------------------------- script API
 
 def obj(name):
     o = bpy.data.objects.get(name)
     if o is None:
         names = sorted(bpy.data.objects.keys())
-        raise KeyError("Objekt {!r} fehlt; vorhanden: {}".format(name, ", ".join(names[:20]) + (" …" if len(names) > 20 else "")))
+        raise KeyError("object {!r} missing; present: {}".format(name, ", ".join(names[:20]) + (" …" if len(names) > 20 else "")))
     return o
 
 
@@ -51,16 +51,16 @@ def report(*objs):
             _reports.append(name)
 
 
-# kaputte Flächen (Fehler) und Warnungen aus mesh_stats; Schwellen wie qa_check (EL4CTEO blender-asset-qa), Weltraum
-BROKEN = ("winzig", "kurz", "splitter", "gefaltet")
+# broken faces (errors) and warnings from mesh_stats; thresholds as in qa_check (EL4CTEO blender-asset-qa), world space
+BROKEN = ("tiny", "zero_edges", "slivers", "folded")
 TINY_AREA, ZERO_EDGE, DUP_DIST = 1e-10, 1e-7, 1e-5
 
 
 def mesh_stats(o, manifold=True):
-    """Zahlen des ausgewerteten Netzes (nach Modifiern, im Weltraum): v/e/f/tris, Maße, offene/nicht-mannigfaltige Kanten.
-    Fehler (kaputte Flächen): winzig (Fläche < 1e-10), kurz (Kante < 1e-7), splitter (Ecke < 1°),
-    gefaltet (Nachbarflächen > 170° geknickt). Warnung: doppelt (Vertex-Paare näher als 1e-5).
-    winzig/kurz/doppelt zählen genau wie qa_check. ngons ist nur Info: N-Gons sind nicht automatisch ein Problem."""
+    """Numbers of the evaluated mesh (after modifiers, in world space): v/e/f/tris, dimensions, open/non-manifold edges.
+    Errors (broken faces): tiny (area < 1e-10), zero_edges (edge < 1e-7), slivers (corner < 1°),
+    folded (neighbouring faces bent > 170°). Warning: duplicates (vertex pairs closer than 1e-5).
+    tiny/zero_edges/duplicates count exactly like qa_check. ngons is info only: n-gons are not automatically a problem."""
     dg = bpy.context.evaluated_depsgraph_get()
     oe = o.evaluated_get(dg)
     st = {"dims": [round(x, 4) for x in o.dimensions]}
@@ -73,22 +73,22 @@ def mesh_stats(o, manifold=True):
         if manifold and len(me.vertices) <= 2_000_000:
             bm = bmesh.new()
             bm.from_mesh(me)
-            bm.transform(o.matrix_world)  # Schwellen gelten im Weltraum (wie qa_check)
+            bm.transform(o.matrix_world)  # thresholds apply in world space (as in qa_check)
             st["nonmanifold"] = sum(1 for e in bm.edges if not e.is_manifold)
             st["loose_v"] = sum(1 for v in bm.verts if not v.link_edges)
             st["ngons"] = sum(1 for f in bm.faces if len(f.verts) > 4)
-            st["winzig"] = sum(1 for f in bm.faces if f.calc_area() < TINY_AREA)
-            st["kurz"] = sum(1 for e in bm.edges if e.calc_length() < ZERO_EDGE)
-            st["splitter"] = sum(1 for f in bm.faces if f.calc_area() >= TINY_AREA and
+            st["tiny"] = sum(1 for f in bm.faces if f.calc_area() < TINY_AREA)
+            st["zero_edges"] = sum(1 for e in bm.edges if e.calc_length() < ZERO_EDGE)
+            st["slivers"] = sum(1 for f in bm.faces if f.calc_area() >= TINY_AREA and
                                  all(e.calc_length() >= ZERO_EDGE for e in f.edges) and
                                  min(l.calc_angle() for l in f.loops) < math.radians(1.0))
-            st["gefaltet"] = sum(1 for e in bm.edges if len(e.link_faces) == 2 and
+            st["folded"] = sum(1 for e in bm.edges if len(e.link_faces) == 2 and
                                  e.calc_face_angle(0.0) > math.radians(170))
             kd = KDTree(len(bm.verts))
             for v in bm.verts:
                 kd.insert(v.co, v.index)
             kd.balance()
-            st["doppelt"] = sum(1 for v in bm.verts if len(kd.find_range(v.co, DUP_DIST)) > 1) // 2
+            st["duplicates"] = sum(1 for v in bm.verts if len(kd.find_range(v.co, DUP_DIST)) > 1) // 2
             bm.free()
     finally:
         oe.to_mesh_clear()
@@ -107,12 +107,12 @@ def summary(o):
             parts.append("v {} f {}".format(st["v"], st["f"]))
         parts.append(_fmt_dims(o.dimensions))
         if st.get("nonmanifold"):
-            parts.append("offen/nm-Kanten {}".format(st["nonmanifold"]))
+            parts.append("open/nm edges {}".format(st["nonmanifold"]))
         bad = ["{} {}".format(k, st[k]) for k in BROKEN if st.get(k)]
         if bad:
-            parts.append("FEHLER " + ", ".join(bad))
-        if st.get("doppelt"):
-            parts.append("Warnung doppelte Vertices {}".format(st["doppelt"]))
+            parts.append("ERROR " + ", ".join(bad))
+        if st.get("duplicates"):
+            parts.append("warning duplicate vertices {}".format(st["duplicates"]))
     mats = [s.material.name for s in getattr(o, "material_slots", []) if s.material]
     if mats:
         parts.append("mat " + ",".join(mats[:4]) + ("…" if len(mats) > 4 else ""))
@@ -128,8 +128,8 @@ def _jsonable(x):
 
 
 def run_file(path, args=None):
-    """Führt ein Skript in der offenen Szene aus. Fehler fliegen durch (Traceback mit Datei und Zeile).
-    args: Parameter aus `bl run --set` (im Skript als Dict `args`)."""
+    """Run a script in the open scene. Errors propagate (traceback with file and line).
+    args: parameters from `bl run --set` (dict `args` in the script)."""
     global _changed
     _reports.clear()
     _changed = True
@@ -148,9 +148,9 @@ def run_file(path, args=None):
 
 
 def hits(origin_mm, direction, names=None, max_m=100.0):
-    """Alle Treffer eines Strahls durch die ausgewerteten Netze (Welt), sortiert nach Abstand.
-    origin_mm: (x, y, z) in mm, direction: Vektor (wird normiert), names: nur diese Objekte (sonst alle sichtbaren Meshes).
-    → [[x, y, z], …] in mm, auf 0,01 mm gerundet."""
+    """All hits of a ray through the evaluated meshes (world), sorted by distance.
+    origin_mm: (x, y, z) in mm, direction: vector (normalized), names: only these objects (else all visible meshes).
+    → [[x, y, z], …] in mm, rounded to 0.01 mm."""
     from mathutils.bvhtree import BVHTree
     su = bpy.context.scene.unit_settings.scale_length or 1.0
     dg = bpy.context.evaluated_depsgraph_get()
@@ -176,7 +176,7 @@ def hits(origin_mm, direction, names=None, max_m=100.0):
         if loc is None:
             break
         out.append([round(x * su * 1000.0, 2) for x in loc])
-        # Schritt hinter den Treffer: mind. 0,01 mm, bei großen Koordinaten relativ (float32 im BVH)
+        # step past the hit: at least 0.01 mm, relative for large coordinates (float32 in the BVH)
         eps = max(1e-5 / su, max(abs(x) for x in loc) * 1e-6)
         nxt = loc + d * eps
         if (nxt - loc).length < eps / 2:
@@ -200,15 +200,15 @@ def info(name=None, limit=40):
         if o.type == "MESH":
             faces += mesh_stats(o, manifold=False).get("f", 0)
     missing = [i.name for i in bpy.data.images if i.source == "FILE" and i.filepath and not os.path.exists(bpy.path.abspath(i.filepath))]
-    lines = ["Datei {}  Szene {}  Einheit {} (scale {})  Engine {}  Frame {}".format(
-        bpy.data.filepath or "(ungespeichert)", scene.name, us.length_unit, us.scale_length, scene.render.engine, scene.frame_current),
-        "Objekte {} ({})  Faces gesamt {}  Materialien {}  Bilder {}{}".format(
+    lines = ["file {}  scene {}  unit {} (scale {})  engine {}  frame {}".format(
+        bpy.data.filepath or "(unsaved)", scene.name, us.length_unit, us.scale_length, scene.render.engine, scene.frame_current),
+        "objects {} ({})  faces total {}  materials {}  images {}{}".format(
             len(scene.objects), ", ".join("{} {}".format(k.lower(), v) for k, v in sorted(by_type.items())), faces,
-            len(bpy.data.materials), len(bpy.data.images), "  FEHLENDE Bilder: " + ", ".join(missing[:5]) if missing else "")]
+            len(bpy.data.materials), len(bpy.data.images), "  MISSING images: " + ", ".join(missing[:5]) if missing else "")]
     objs = sorted(scene.objects, key=lambda o: (o.type not in GEOM_TYPES, o.name))
     body = [summary(o) for o in objs[:limit]]
     if len(objs) > limit:
-        body.append("… +{} weitere Objekte (bl info --obj NAME für Details)".format(len(objs) - limit))
+        body.append("… +{} more objects (bl info --obj NAME for details)".format(len(objs) - limit))
     return {"lines": lines + body}
 
 
@@ -227,7 +227,7 @@ def _mod_desc(m):
         elif isinstance(v, float):
             v = round(v, 4)
         vals.append("{}={}".format(k, v))
-    return "{} ({}){}{}".format(m.name, m.type.lower(), " " + " ".join(vals) if vals else "", "" if m.show_viewport else " [aus]")
+    return "{} ({}){}{}".format(m.name, m.type.lower(), " " + " ".join(vals) if vals else "", "" if m.show_viewport else " [off]")
 
 
 def _info_obj(o):
@@ -235,27 +235,27 @@ def _info_obj(o):
          "loc {}  rot° {}  scale {}".format(tuple(round(x, 4) for x in o.location),
                                             tuple(round(math.degrees(x), 2) for x in o.rotation_euler),
                                             tuple(round(x, 4) for x in o.scale)),
-         "Maße {}".format(_fmt_dims(o.dimensions))]
+         "dims {}".format(_fmt_dims(o.dimensions))]
     if o.parent:
         L.append("parent {}".format(o.parent.name))
     if o.type in GEOM_TYPES:
         st = mesh_stats(o)
-        L.append("ausgewertet: " + "  ".join(("{} {} (Info)" if k == "ngons" else "{} {}").format(k.replace("ngons", "N-Gons"), v) for k, v in st.items() if k != "dims" and not (k in BROKEN + ("doppelt",) and not v)))
+        L.append("evaluated: " + "  ".join(("{} {} (info)" if k == "ngons" else "{} {}").format(k.replace("ngons", "n-gons"), v) for k, v in st.items() if k != "dims" and not (k in BROKEN + ("duplicates",) and not v)))
         bad = ["{} {}".format(k, st[k]) for k in BROKEN if st.get(k)]
         if bad:
-            L.append("FEHLER kaputte Flächen: " + ", ".join(bad) + " (Wireframe/Shading können hier Artefakte zeigen)")
-        if st.get("doppelt"):
-            L.append("Warnung doppelte Vertices: {} Paare näher als {} (Nähte im Shading; Merge by Distance)".format(st["doppelt"], DUP_DIST))
+            L.append("ERROR broken faces: " + ", ".join(bad) + " (wireframe/shading may show artifacts here)")
+        if st.get("duplicates"):
+            L.append("warning duplicate vertices: {} pairs closer than {} (seams in shading; Merge by Distance)".format(st["duplicates"], DUP_DIST))
     for m in o.modifiers:
         L.append("mod " + _mod_desc(m))
     for s in getattr(o, "material_slots", []):
         mat = s.material
         if mat:
             n = len(mat.node_tree.nodes) if mat.use_nodes and mat.node_tree else 0
-            L.append("mat {} ({} Nodes)".format(mat.name, n))
+            L.append("mat {} ({} nodes)".format(mat.name, n))
     d = o.data
     if o.type == "MESH":
-        L.append("UV {}  Vertex-Gruppen {}  Shape-Keys {}".format(
+        L.append("UV {}  vertex groups {}  shape keys {}".format(
             ",".join(u.name for u in d.uv_layers) or "-", len(o.vertex_groups),
             len(d.shape_keys.key_blocks) if d.shape_keys else 0))
     return L
@@ -299,7 +299,7 @@ def _hide_others(scene, keep):
 
 
 def _split_ground(objs):
-    """Große flache Platten (Boden/Hintergrund) aus der Rahmung nehmen: flach (< 1 % Dicke) und > 4× so groß wie der Rest."""
+    """Exclude large flat plates (ground/backdrop) from framing: flat (< 1 % thickness) and > 4× the size of the rest."""
     if len(objs) < 2:
         return objs, []
     flat = [o for o in objs if max(o.dimensions) > 0 and min(o.dimensions) < 0.01 * max(o.dimensions)]
@@ -313,19 +313,19 @@ def _split_ground(objs):
 
 
 def _append_ref(path, names, tmpdir, env=False):
-    """Lädt die Geometrie-Objekte eines gespeicherten Stands temporär in die Szene. → (objekte, neue IDs zum Entfernen, umgebung).
-    env=True (Kamera-Vergleich): umgebung = {"lights": sichtbare Lichter des Stands (nicht verlinkt), "world": dessen Welt}."""
+    """Temporarily load the geometry objects of a saved state into the scene. → (objects, new IDs to remove, environment).
+    env=True (camera comparison): environment = {"lights": visible lights of that state (not linked), "world": its world}."""
     import shutil
     colls = [c for c in dir(bpy.data) if c not in ("window_managers", "screens", "workspaces", "libraries")
              and isinstance(getattr(bpy.data, c, None), bpy.types.bpy_prop_collection)]
     tmp = os.path.join(tmpdir, "_bl_ref_{}.blend".format(os.getpid()))
-    shutil.copyfile(path, tmp)  # Kopie: aus der gerade offenen Datei kann Blender nicht anhängen
+    shutil.copyfile(path, tmp)  # copy: Blender cannot append from the currently open file
     before = {c: {i.as_pointer() for i in getattr(bpy.data, c)} for c in colls}
     try:
         with bpy.data.libraries.load(tmp, link=False) as (src, dst):
             srcnames = list(src.objects)
-            dst.objects = list(srcnames)  # eigene Liste: Blender ersetzt deren Einträge beim Laden durch Objekte
-            if env:  # Szene mitladen: deren Welt und Lichter gehören zum alten Stand
+            dst.objects = list(srcnames)  # own list: Blender replaces its entries with objects while loading
+            if env:  # load the scene too: its world and lights belong to the old state
                 cur = bpy.context.scene.name
                 want = cur if cur in src.scenes else (src.scenes[0] if src.scenes else None)
                 dst.scenes = [want] if want else []
@@ -351,20 +351,20 @@ def _append_ref(path, names, tmpdir, env=False):
     return ref, new, umg
 
 
-SECTION_VIEW = {"x": "left", "y": "front", "z": "top"}  # Blick von der weggeschnittenen Seite
+SECTION_VIEW = {"x": "left", "y": "front", "z": "top"}  # view from the side that is cut away
 
 
 def _section_copies(scene, objs, section, mn, mx, temps, ids):
-    """Schnittkopien: jedes Mesh mit Exact-Boolean gegen einen Quader auf der Kameraseite der Ebene.
-    x=V / y=V: entfernt x<V / y<V (Blick von -x / -y); z=V: entfernt z>V (Blick von oben).
-    Neue Objekte landen sofort in temps, Mesh/Material in ids (Aufräumen auch bei Teilfehlern). → kopien"""
+    """Section copies: each mesh with an Exact boolean against a box on the camera side of the plane.
+    x=V / y=V: removes x<V / y<V (view from -x / -y); z=V: removes z>V (view from above).
+    New objects go into temps immediately, mesh/material into ids (cleanup also on partial failure). → copies"""
     ax, v_mm = section
     su = scene.unit_settings.scale_length or 1.0
     v = v_mm / 1000.0 / su
     i = "xyz".index(ax)
     c = (mn + mx) / 2
     diag = max((mx - mn).length, 1e-3)
-    size = 2 * (diag + abs(v - c[i])) + diag  # deckt die Szene auch, wenn die Ebene weit außerhalb liegt
+    size = 2 * (diag + abs(v - c[i])) + diag  # covers the scene even if the plane lies far outside
     center = Vector(c)
     center[i] = v + size / 2 if ax == "z" else v - size / 2
     me = bpy.data.meshes.new("_bl_schnitt")
@@ -394,25 +394,25 @@ def _section_copies(scene, objs, section, mn, mx, temps, ids):
         m = k.modifiers.new("_bl_cut", "BOOLEAN")
         m.operation, m.solver, m.object = "DIFFERENCE", "EXACT", cutter
         if hasattr(m, "material_mode"):
-            m.material_mode = "TRANSFER"  # Schnittfläche bekommt das rote Material des Quaders
+            m.material_mode = "TRANSFER"  # the cut face gets the red material of the box
         copies.append(k)
     return copies
 
 
 def _section_check(objs):
     if not any(o.type == "MESH" for o in objs):
-        raise ValueError("--section schneidet nur Meshes; gewählt: {}".format(", ".join(o.name for o in objs) or "-"))
+        raise ValueError("--section cuts meshes only; selected: {}".format(", ".join(o.name for o in objs) or "-"))
 
 
 def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section=None):
-    """Workbench-Renders der Objekte objs (alles andere ausgeblendet), Kamera gerahmt auf frame. → [(view, RGBA, mm/px)]
-    section=('x'|'y'|'z', mm): Schnittansicht, Blick senkrecht auf die Ebene."""
+    """Workbench renders of objs (everything else hidden), camera framed on frame. → [(view, RGBA, mm/px)]
+    section=('x'|'y'|'z', mm): section view, looking perpendicular onto the plane."""
     from PIL import Image
     scene = bpy.context.scene
     mn, mx = bbox_world(frame)
     center = (mn + mx) / 2
     radius = max((mx - mn).length / 2, 1e-4)
-    if focus:  # Ausschnitt: Kamera außerhalb der ganzen Szene, Bildausschnitt nur um den Punkt
+    if focus:  # closeup: camera outside the whole scene, frame only around the point
         fc, fr = focus
         radius = radius + (fc - center).length
         center = fc
@@ -424,7 +424,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
     temps, colors, cut_ids, hidden, res = [], {}, [], [], []
     if section:
         _section_check(objs)
-    try:  # alles Temporäre ab hier wird im finally entfernt, auch bei Fehlern
+    try:  # everything temporary from here on is removed in finally, also on errors
         cam_data = bpy.data.cameras.new("_bl_look_cam")
         cam = bpy.data.objects.new("_bl_look_cam", cam_data)
         scene.collection.objects.link(cam)
@@ -457,7 +457,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
                 mod = w.modifiers.new("_bl_wire", "WIREFRAME")
                 mod.thickness = radius * 0.004
                 mod.use_replace = True
-                mod.use_even_offset = False  # True schießt an Splitterflächen meterlange Strahlen (23.11. nachgestellt)
+                mod.use_even_offset = False  # True shoots metre-long spikes at sliver faces (reproduced)
                 w.color = (0.08, 0.08, 0.1, 1)
                 temps.append(w)
         cam_data.type = "ORTHO"
@@ -466,10 +466,10 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
             d = Vector(VIEW_DIRS[v]).normalized()
             dist = radius * 4
             cam.location = center + d * dist
-            if v == "top":  # senkrecht: to_track_quat ist dort mehrdeutig (Bild war um 180° gedreht)
-                cam.rotation_euler = (0.0, 0.0, 0.0)  # Blick -Z, oben = +Y, rechts = +X
+            if v == "top":  # straight down: to_track_quat is ambiguous there (image was rotated by 180°)
+                cam.rotation_euler = (0.0, 0.0, 0.0)  # looking -Z, up = +Y, right = +X
             elif v == "bottom":
-                cam.rotation_euler = (math.pi, 0.0, 0.0)  # Blick +Z, oben = -Y, rechts = +X
+                cam.rotation_euler = (math.pi, 0.0, 0.0)  # looking +Z, up = -Y, right = +X
             else:
                 cam.rotation_euler = (-d).to_track_quat("-Z", "Y").to_euler()
             bpy.context.view_layer.update()
@@ -492,7 +492,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
             os.remove(p)
             res.append((v, im, cam_data.ortho_scale * scene.unit_settings.scale_length * 1000 / panel))
     finally:
-        for o, c in colors.values():  # vor dem Löschen: Schnittkopien sind auch in colors
+        for o, c in colors.values():  # before deleting: section copies are in colors too
             o.color = c
         for o in temps:
             data = o.data if o.type == "CAMERA" else None
@@ -512,10 +512,10 @@ def _render_views(out, objs, frame, views, mode, panel, tag, focus=None, section
 
 
 def _set_engine(r, name):
-    """r.engine auf 'eevee'|'cycles'|'workbench' setzen. Die Enum-Liste meldet zu wenig (nur EEVEE), daher per Zuweisung probieren."""
+    """Set r.engine to 'eevee'|'cycles'|'workbench'. The enum list reports too little (EEVEE only), so try by assignment."""
     cands = {"eevee": ("BLENDER_EEVEE", "BLENDER_EEVEE_NEXT"), "cycles": ("CYCLES",),
              "workbench": ("BLENDER_WORKBENCH",)}[name]
-    if name == "cycles" and "cycles" not in bpy.context.preferences.addons:  # --factory-startup lädt Cycles evtl. nicht
+    if name == "cycles" and "cycles" not in bpy.context.preferences.addons:  # --factory-startup may not load Cycles
         import addon_utils
         addon_utils.enable("cycles", default_set=True, persistent=False)
     last = None
@@ -525,11 +525,11 @@ def _set_engine(r, name):
             return c
         except TypeError as ex:
             last = ex
-    raise ValueError("Engine {} nicht verfügbar: {}".format(name, last))
+    raise ValueError("engine {} not available: {}".format(name, last))
 
 
 def _cycles_gpu(scene):
-    """Cycles auf die GPU (OptiX, sonst CUDA), wenn vorhanden. → Gerätetext."""
+    """Put Cycles on the GPU (OptiX, else CUDA) if available. → device text."""
     try:
         prefs = bpy.context.preferences.addons["cycles"].preferences
         for typ in ("OPTIX", "CUDA"):
@@ -551,13 +551,13 @@ def _cycles_gpu(scene):
 
 
 def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
-    """Render der Szenenkamera mit eingestellter Engine, nur objs sichtbar (Licht/Boden bleiben).
-    engine/samples: nur für dieses Bild. umg={"lights", "world"}: Licht und Welt eines anderen Stands statt der aktuellen."""
+    """Render from the scene camera with the configured engine, only objs visible (lights/ground stay).
+    engine/samples: for this image only. umg={"lights", "world"}: lights and world of another state instead of the current ones."""
     global _cam_device
     from PIL import Image
     scene = bpy.context.scene
     if scene.camera is None:
-        raise RuntimeError("Szene hat keine Kamera (--mode cam braucht scene.camera)")
+        raise RuntimeError("scene has no camera (--mode cam needs scene.camera)")
     r = scene.render
     saved = (r.resolution_x, r.resolution_y, r.resolution_percentage, r.filepath, r.image_settings.file_format, r.engine)
     s_eevee = scene.eevee.taa_render_samples
@@ -580,7 +580,7 @@ def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
             scene.world = umg["world"]
         if engine:
             _set_engine(r, engine)
-        if hasattr(scene, "cycles"):  # erst hier: _set_engine lädt Cycles evtl. gerade erst
+        if hasattr(scene, "cycles"):  # only here: _set_engine may have just loaded Cycles
             s_cyc, dev = scene.cycles.samples, scene.cycles.device
         if r.engine == "CYCLES":
             _cam_device = _cycles_gpu(scene)
@@ -610,7 +610,7 @@ def _render_cam(out, panel, objs, tag, engine=None, samples=None, umg=None):
 
 
 def _diff(a, b):
-    """Anteil geänderter Pixel (in % der Objektfläche bzw. des Bilds) und Rahmen der Änderung."""
+    """Share of changed pixels (in % of the object area or the image) and bounding box of the change."""
     import numpy as np
     A = np.asarray(a, dtype=np.int16)
     B = np.asarray(b, dtype=np.int16)
@@ -628,7 +628,7 @@ def _diff(a, b):
 
 
 def _scale_bar(mmpp, width, frac=0.25):
-    """Runde Balkenlänge 1/2/5·10ⁿ mm (≤ frac der Breite). → (mm, px) oder None. Wie core.scale_bar."""
+    """Round bar length 1/2/5·10ⁿ mm (≤ frac of the width). → (mm, px) or None."""
     if not mmpp or mmpp <= 0:
         return None
     target = mmpp * width * frac
@@ -644,13 +644,13 @@ def _tile(im, label, font, bg, mmpp=None):
     dr = ImageDraw.Draw(base)
     dr.text((6, 4), label, fill=(30, 30, 30), font=font)
     sb = _scale_bar(mmpp, base.width)
-    if sb:  # Maßstabsbalken unten rechts
+    if sb:  # scale bar bottom right
         mm, px = sb
         x1, y = base.width - 10, base.height - 12
         x0 = x1 - px
         txt = "{:g} mm".format(mm)
         tw = dr.textlength(txt, font=font)
-        # helles Feld dahinter: Balken bleibt lesbar, wenn das Objekt bis in die Ecke reicht
+        # light box behind it: the bar stays readable if the object reaches into the corner
         box = (min(x0, x1 - px / 2 - tw / 2) - 5, y - 14 - font.size, x1 + 5, y + 8)
         over = Image.new("RGBA", base.size, (0, 0, 0, 0))
         ImageDraw.Draw(over).rectangle(box, fill=bg + (215,))
@@ -664,44 +664,44 @@ def _tile(im, label, font, bg, mmpp=None):
 
 
 def _parse_focus(focus, radius_mm):
-    """focus: Objektname oder 'x,y,z' in mm (wie --radius). radius_mm: Radius des Ausschnitts in mm."""
+    """focus: object name or 'x,y,z' in mm (like --radius). radius_mm: radius of the closeup in mm."""
     su = bpy.context.scene.unit_settings.scale_length or 1.0
     r = radius_mm / 1000.0 / su if radius_mm else None
     if focus in bpy.data.objects:
         mn, mx = bbox_world([bpy.data.objects[focus]])
         return (mn + mx) / 2, r or max((mx - mn).length / 2, 1e-4)
     try:
-        c = Vector([float(x) / 1000.0 / su for x in focus.split(",")])  # mm → Szeneneinheiten
+        c = Vector([float(x) / 1000.0 / su for x in focus.split(",")])  # mm → scene units
         assert len(c) == 3
     except (ValueError, AssertionError):
-        raise ValueError("--focus braucht einen Objektnamen oder x,y,z in mm, nicht {!r}".format(focus))
+        raise ValueError("--focus needs an object name or x,y,z in mm, not {!r}".format(focus))
     if r is None:
-        raise ValueError("--focus x,y,z braucht --radius (mm)")
+        raise ValueError("--focus x,y,z needs --radius (mm)")
     return c, r
 
 
 def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, compare=None, bg=(242, 242, 242),
          focus=None, radius_mm=None, section=None, engine=None, samples=None):
-    """Rendert Ansichten in eine PNG mit Textstreifen. mode: solid|wire (Workbench, ortho, gerahmt) oder cam.
-    compare=<.blend>: derselbe Blick auf den gespeicherten Stand links ("vorher"), aktuelle Szene rechts ("jetzt"),
-    gleiche Kamera für beide; Änderung in % mit rotem Rahmen."""
+    """Render views into one PNG with a text strip. mode: solid|wire (Workbench, ortho, framed) or cam.
+    compare=<.blend>: the same view of the saved state on the left ("before"), current scene on the right ("now"),
+    same camera for both; change in % with a red box."""
     from PIL import Image, ImageDraw
     scene = bpy.context.scene
     if focus and mode == "cam":
-        raise ValueError("--focus geht nur mit solid/wire, nicht mit --mode cam")
+        raise ValueError("--focus works only with solid/wire, not with --mode cam")
     fcs = _parse_focus(focus, radius_mm) if focus else None
     sec = None
     if section:
         ax, _s, v = section.replace(" ", "").partition("=")
         sec = (ax, float(v))
         if focus:
-            raise ValueError("--section und --focus nicht zusammen")
+            raise ValueError("--section and --focus cannot be combined")
     ref, new_ids, umg, eng = [], [], None, None
     try:
         if compare:
             ref, new_ids, umg = _append_ref(compare, names, os.path.dirname(out), env=(mode == "cam"))
             if not ref:
-                raise RuntimeError("Vergleichsstand {} enthält keine passenden Geometrie-Objekte".format(compare))
+                raise RuntimeError("comparison state {} contains no matching geometry objects".format(compare))
         refp = {o.as_pointer() for o in ref}
         ground = []
         if names:
@@ -713,27 +713,27 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
                 if ref:
                     ref, _g = _split_ground(ref)
         if not objs:
-            raise RuntimeError("Nichts zu sehen: keine sichtbaren Geometrie-Objekte in der Szene")
+            raise RuntimeError("nothing to see: no visible geometry objects in the scene")
         if mode == "cam":
-            cur = [("cam", _render_cam(out, panel, objs if compare else None, "jetzt", engine, samples), None)]
-            old = [("cam", _render_cam(out, panel, ref, "vorher", engine, samples, umg), None)] if compare else []
+            cur = [("cam", _render_cam(out, panel, objs if compare else None, "now", engine, samples), None)]
+            old = [("cam", _render_cam(out, panel, ref, "before", engine, samples, umg), None)] if compare else []
         else:
             frame = objs + ref
-            cur = _render_views(out, objs, frame, views, mode, panel, "jetzt", fcs, sec)
-            old = _render_views(out, ref, frame, views, mode, panel, "vorher", fcs, sec) if compare else []
+            cur = _render_views(out, objs, frame, views, mode, panel, "now", fcs, sec)
+            old = _render_views(out, ref, frame, views, mode, panel, "before", fcs, sec) if compare else []
         faces = sum(mesh_stats(o, manifold=False).get("f", 0) for o in objs if o.type == "MESH")
         names_txt = ", ".join(o.name for o in objs[:8]) + (" …" if len(objs) > 8 else "")
         if ground:
-            names_txt += "  (ohne Boden: {})".format(", ".join(o.name for o in ground))
+            names_txt += "  (without ground: {})".format(", ".join(o.name for o in ground))
         if sec:
-            names_txt += "  · Schnitt {}={:g} mm{}".format(sec[0], sec[1], " (rot = Schnittfläche)" if mode == "solid" else "")
+            names_txt += "  · section {}={:g} mm{}".format(sec[0], sec[1], " (red = cut face)" if mode == "solid" else "")
         if mode == "cam":
             eng = engine or {"CYCLES": "cycles", "BLENDER_WORKBENCH": "workbench"}.get(scene.render.engine, "eevee")
             names_txt += "  · Engine {}{}{}".format(eng, " ({})".format(_cam_device) if eng == "cycles" else "",
                                                     " · {} Samples".format(samples) if samples and eng != "workbench" else "")
         if fcs:
             su = scene.unit_settings.scale_length or 1.0
-            names_txt += "  · Ausschnitt um ({}) mm, r {:.3g} mm".format(
+            names_txt += "  · closeup around ({}) mm, r {:.3g} mm".format(
                 ", ".join("{:.4g}".format(x * su * 1000) for x in fcs[0]), fcs[1] * su * 1000)
     finally:
         if new_ids:
@@ -745,10 +745,10 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
         rows = []
         for (v, im_new, mm_n), (_v, im_old, mm_o) in zip(cur, old):
             pct, bbox = _diff(im_old, im_new)
-            pct = round(pct, 1)  # eine Rundung für Kachel, Legende und CLI
+            pct = round(pct, 1)  # one rounding for tile, legend and CLI
             changes.append({"view": v, "pct": pct, "bbox": bbox})
-            a = _tile(im_old, v + " · vorher", font, bg, mm_o)
-            b = _tile(im_new, "{} · jetzt · Änderung {:.1f} %".format(v, pct), font, bg, mm_n)
+            a = _tile(im_old, v + " · before", font, bg, mm_o)
+            b = _tile(im_new, "{} · now · change {:.1f} %".format(v, pct), font, bg, mm_n)
             if bbox:
                 x0, y0, x1, y1 = bbox
                 ImageDraw.Draw(b).rectangle((max(0, x0 - 4), max(0, y0 - 4), min(b.width - 1, x1 + 4), min(b.height - 1, y1 + 4)),
@@ -771,17 +771,17 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             img = tiles[0]
     mmpp = [m for _v, _i, m in cur if m is not None]
     empty = [v for v, im, _m in cur if mode != "cam" and im.getextrema()[3][1] == 0]
-    legend = ["{} · Modus {}{} · Objekte {} · Faces {}".format(
+    legend = ["{} · mode {}{} · objects {} · faces {}".format(
         "/".join(v for v, _i, _m in cur), mode,
         " · 1 px = {} mm".format("/".join("{:.3g}".format(x) for x in mmpp)) if mmpp else "", len(objs), faces), names_txt]
     if empty:
-        legend.append("⚠ LEER: in {} ist nichts zu sehen (Ausschnitt verfehlt? Punkt in mm angeben)".format("/".join(empty)))
+        legend.append("⚠ EMPTY: nothing visible in {} (closeup missed? give the point in mm)".format("/".join(empty)))
     if compare:
         mx = max(c["pct"] for c in changes)
-        legend.append("Vergleich mit {}: {}{}".format(
+        legend.append("compared with {}: {}{}".format(
             os.path.basename(os.path.dirname(os.path.dirname(compare))) + "/" + os.path.basename(compare),
             ", ".join("{} {:.1f} %".format(c["view"], c["pct"]) for c in changes),
-            "  ⚠ kaum sichtbare Änderung (< 1 %)" if mx < 1 else ""))
+            "  ⚠ barely visible change (< 1 %)" if mx < 1 else ""))
     strip_h = len(legend) * 16 + 8
     final = Image.new("RGB", (img.width, img.height + strip_h), (255, 255, 255))
     final.paste(img, (0, 0))
@@ -798,30 +798,30 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
 # --------------------------------------------------------------------------- qa
 
 def _qa_module(qa_dir):
-    """qa_check aus EL4CTEO blender-asset-qa (MIT) genau aus qa_dir laden (nicht irgendein qa_check im sys.path)."""
+    """Load qa_check from EL4CTEO blender-asset-qa (MIT) exactly from qa_dir (not any qa_check on sys.path)."""
     import importlib.util
     path = os.path.realpath(os.path.join(qa_dir, "qa_check.py"))
     if not os.path.isfile(path):
-        raise RuntimeError("qa_check.py fehlt unter {}".format(qa_dir))
+        raise RuntimeError("qa_check.py missing under {}".format(qa_dir))
     mod = sys.modules.get("qa_check")
     if mod is not None and os.path.realpath(getattr(mod, "__file__", "") or "") == path:
         return mod
     spec = importlib.util.spec_from_file_location("qa_check", path)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["qa_check"] = mod  # qa_check setzt beim Import sein Verzeichnis selbst vorn in sys.path (für _bpyx)
+    sys.modules["qa_check"] = mod  # on import qa_check puts its own directory first in sys.path (for _bpyx)
     spec.loader.exec_module(mod)
     return mod
 
 
-# eigene Prüfungen → Schlüssel im qa_check-Profil (e = Fehler, w = Warnung, None = aus)
-_QA_OWN = {"splitter": "dg", "gefaltet": "inc"}  # winzig/kurz/doppelt zählt qa_check selbst (gleiche Schwellen)
+# own checks → key in the qa_check profile (e = error, w = warning, None = off)
+_QA_OWN = {"slivers": "dg", "folded": "inc"}  # tiny/zero_edges/duplicates are counted by qa_check itself (same thresholds)
 
 
 def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None):
-    """Prüft Meshes mit qa_check (z-fighting, schwebend, Normalen, offene/nm-Kanten, Duplikate, Maßstab, UV, Material)
-    plus eigene Prüfungen (kaputte Flächen, Schwere nach Profil) und Polybudget (Tris gesamt).
-    names: diese Objekte zusammen als ein Asset. None: jedes sichtbare Mesh einzeln (ohne große Bodenplatten),
-    sonst gelten getrennte Objekte als „schwebend“. Modus und aktives Objekt bleiben erhalten.
+    """Check meshes with qa_check (z-fighting, floating, normals, open/nm edges, duplicates, scale, UV, material)
+    plus own checks (broken faces, severity per profile) and a poly budget (total tris).
+    names: these objects together as one asset. None: each visible mesh separately (without large ground plates),
+    otherwise separate objects count as "floating". Mode and active object are preserved.
     → {"pass", "errors", "warnings", "objects", "ground", "tris"}"""
     scene = bpy.context.scene
     qc = _qa_module(qa_dir or os.path.expanduser("~/repos/blender-skills/skills/blender-asset-qa/scripts"))
@@ -836,7 +836,7 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None)
         groups = [[o] for o in objs]
     groups = [g for g in groups if g]
     if not groups:
-        raise RuntimeError("keine Meshes zu prüfen")
+        raise RuntimeError("no meshes to check")
     kw = {"profile": profile}
     if eps is not None:
         kw["eps"] = eps
@@ -848,12 +848,12 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None)
     errors, warnings, per, total, gz = [], [], {}, 0, []
     ground_msg = "asset lowest point"
     try:
-        einzeln = not names and len(groups) > 1
+        per_object = not names and len(groups) > 1
         for g in groups:
             r = qc.run(objects=[o.name for o in g], **kw)
             errors += r.get("errors", [])
-            # Einzelprüfung: Bodenhöhe kommt einmal aus dem gemeinsamen Lauf (sonst je Objekt, z. B. Tasse auf dem Tisch)
-            warnings += [w for w in r.get("warnings", []) if not (einzeln and w.startswith(ground_msg))]
+            # per-object check: the ground height comes once from the joint run (else per object, e.g. a mug on a table)
+            warnings += [w for w in r.get("warnings", []) if not (per_object and w.startswith(ground_msg))]
             if r.get("ground_z") is not None:
                 gz.append(r["ground_z"])
             for o in g:
@@ -865,14 +865,14 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None)
                                "dims_mm": [round(x * (scene.unit_settings.scale_length or 1.0) * 1000, 2) for x in o.dimensions]}
                 for k, prof_key in _QA_OWN.items():
                     if st.get(k):
-                        msg = "{}: kaputte Flächen {} {}".format(o.name, k, st[k])
+                        msg = "{}: broken faces {} {}".format(o.name, k, st[k])
                         level = sev.get(prof_key)
                         (errors if level == "e" else warnings if level == "w" else []).append(msg)
-        if einzeln:  # Paarbefunde zwischen Objekten (z-fighting, verdeckte Rückseiten) sieht nur ein gemeinsamer Lauf
+        if per_object:  # pair findings between objects (z-fighting, hidden back faces) are only seen by a joint run
             r = qc.run(objects=[o.name for g in groups for o in g], **kw)
             errors += [e for e in r.get("errors", []) if "<->" in e]
             warnings += [w for w in r.get("warnings", []) if "<->" in w or w.startswith(ground_msg)]
-    finally:  # qa_check schaltet in den Object-Modus: Modus und aktives Objekt zurück
+    finally:  # qa_check switches to object mode: restore mode and active object
         if act is not None and act.name in vl.objects:
             vl.objects.active = act
             if act.mode != mode:
@@ -881,10 +881,10 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None)
                 except RuntimeError:
                     pass
     if budget is not None and total > budget:
-        errors.append("Polybudget überschritten: {} Tris > {}".format(total, budget))
+        errors.append("poly budget exceeded: {} tris > {}".format(total, budget))
     return {"pass": not errors, "profile": profile, "errors": errors, "warnings": warnings, "objects": per,
             "ground": [o.name for o in ground], "tris": total, "budget": budget,
-            "ground_z": min(gz) if gz else None, "einzeln": not names}
+            "ground_z": min(gz) if gz else None, "per_object": not names}
 
 
 # --------------------------------------------------------------------------- save
@@ -893,5 +893,5 @@ def save(path):
     global _changed
     os.makedirs(os.path.dirname(path), exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False)
-    _changed = False  # erst nach erfolgreichem Speichern
+    _changed = False  # only after a successful save
     return {"path": path, "bytes": os.path.getsize(path)}

@@ -75,7 +75,7 @@ def with_doc(doc: str) -> Callable[[Callable[..., object]], Callable[..., object
     return decorate
 
 
-from .rst_parse_docs import (  # bl: relativ statt Paket blmcp
+from .rst_parse_docs import (  # bl: relative instead of package blmcp
     data_dir,
     split_paragraphs_with_sections_for_path,
     split_paragraphs_with_sections_from_text,

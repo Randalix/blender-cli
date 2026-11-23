@@ -1,6 +1,6 @@
-"""bl — Blender per Skript für Agenten: offene Szene im Hintergrund-Worker, messen, ansehen, versionieren.
+"""bl — Blender by script for agents: open scene in a background worker, measure, look, version.
 
-Exit-Codes: 0 ok · 1 Befund · 2 Skript-/Aufruffehler · 3 Infrastruktur (Worker/Blender).
+Exit codes: 0 ok · 1 finding · 2 script/usage error · 3 infrastructure (worker/Blender).
 """
 import argparse
 import json
@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core  # noqa: E402
 
 REPO = Path(os.environ.get("BL_REPO") or Path(__file__).resolve().parent.parent)
-BLENDER_DIR = Path(os.environ.get("BL_BLENDER_DIR", "/mnt/caches/ComfyUI/_tools/blender-5.2.4-linux-x64"))
+BLENDER_DIR = Path(os.environ.get("BL_BLENDER_DIR") or (os.path.dirname(shutil.which("blender") or "") or "."))
 IDLE = float(os.environ.get("BL_IDLE", "900"))
 
 
@@ -32,21 +32,21 @@ def out(*lines):
         print(ln)
 
 
-# --------------------------------------------------------------------------- Projekt/Version
+# --------------------------------------------------------------------------- project/version
 
 def active(st=None, need=True):
-    """(projektordner, versionsordner) der Sitzung. need=True: Fehler, wenn kein Projekt aktiv."""
+    """(project dir, version dir) of the session. need=True: error if no project is active."""
     st = core.load_state() if st is None else st
-    name = st.get("projekt")
+    name = st.get("project") or st.get("projekt")  # "projekt": state written by older versions
     if not name:
         if need:
-            raise Fail("kein Projekt aktiv: zuerst `bl projekt <name>`")
+            raise Fail("no active project: run `bl project <name>` first")
         return None, None
     pdir = core.root() / name
     vs = core.versions(pdir)
     vdir = pdir / st["version"] if st.get("version") and (pdir / st["version"]).is_dir() else (vs[-1] if vs else None)
     if vdir is None and need:
-        raise Fail("Projekt {} hat keine Version: `bl version \"<Label>\"`".format(name))
+        raise Fail("project {} has no version: `bl version \"<label>\"`".format(name))
     return pdir, vdir
 
 
@@ -57,22 +57,23 @@ def make_version(pdir, label):
     return v
 
 
-def cmd_projekt(a):
+def cmd_project(a):
     name = core.clean_label(a.name)
     pdir = core.root() / name
     new = not pdir.exists()
     if new:
         make_version(pdir, "start")
     st = core.load_state()
-    if st.get("projekt") != name:
+    if (st.get("project") or st.get("projekt")) != name:
         st["version"] = None
-    st["projekt"] = name
+    st.pop("projekt", None)
+    st["project"] = name
     core.save_state(st)
     _p, v = active(st)
-    out("{} Projekt {} ({})  aktive Version {}".format("✓ neu:" if new else "✓", name, pdir, v.name))
+    out("{} project {} ({})  active version {}".format("✓ new:" if new else "✓", name, pdir, v.name))
     w = worker_info()
     if w:
-        out("  Hinweis: Worker läuft noch mit {} — `bl close` vor dem Wechsel der Szene".format(w.get("blend") or "ungespeicherter Szene"))
+        out("  note: worker is still running with {} — `bl close` before switching scenes".format(w.get("blend") or "an unsaved scene"))
 
 
 def cmd_version(a):
@@ -81,10 +82,10 @@ def cmd_version(a):
     st = core.load_state()
     st["version"] = v.name
     core.save_state(st)
-    msg = "✓ Version {} (vorher {})".format(v.name, cur.name if cur else "-")
-    if worker_info():  # Startstand als eigene Datei: `bl save` überschreibt ihn nicht, `--compare` findet ihn
+    msg = "✓ version {} (previous {})".format(v.name, cur.name if cur else "-")
+    if worker_info():  # start state as its own file: `bl save` does not overwrite it, `--compare` finds it
         r = call("result = bllib.save({!r})".format(str(v / "blend" / (pdir.name + "_start.blend"))))
-        msg += "  Szene gespeichert → {}".format(rel(r["path"]))
+        msg += "  scene saved → {}".format(rel(r["path"]))
     out(msg)
 
 
@@ -94,15 +95,15 @@ def cmd_ls(a):
     if a.all or pdir is None:
         r = core.root()
         ps = sorted(p for p in r.iterdir() if p.is_dir()) if r.is_dir() else []
-        out("Projekte unter {} ({}):".format(r, len(ps)))
-        out(*core.clip_lines(("  {}{}  {} Versionen".format("* " if pdir and p == pdir else "  ", p.name,
+        out("projects under {} ({}):".format(r, len(ps)))
+        out(*core.clip_lines(("  {}{}  {} versions".format("* " if pdir and p == pdir else "  ", p.name,
                                                                len(core.versions(p))) for p in ps), 40))
         return
-    out("Projekt {} ({})".format(pdir.name, pdir))
+    out("project {} ({})".format(pdir.name, pdir))
     for v in core.versions(pdir):
-        cnt = {s: len(list((v / s).glob("*"))) for s in ("blend", "vorschau", "skripte", "export")}
-        out("  {} {}  blend {} · bilder {} · skripte {} · export {}".format(
-            "*" if v == vdir else " ", v.name, cnt["blend"], cnt["vorschau"], cnt["skripte"], cnt["export"]))
+        cnt = {s: len(list((v / s).glob("*"))) for s in ("blend", "preview", "scripts", "export")}
+        out("  {} {}  blend {} · images {} · scripts {} · export {}".format(
+            "*" if v == vdir else " ", v.name, cnt["blend"], cnt["preview"], cnt["scripts"], cnt["export"]))
 
 
 def rel(p):
@@ -112,7 +113,7 @@ def rel(p):
         return str(p)
 
 
-# --------------------------------------------------------------------------- Worker
+# --------------------------------------------------------------------------- worker
 
 def _alive(pid):
     try:
@@ -143,27 +144,29 @@ def blender_exe():
 
 
 def _autosave_hint(sd, implicit):
-    """Leerlauf-Sicherung des letzten Workers: beim stillen Start (bl run/save/…) abbrechen, damit nicht auf dem
-    alten Stand weitergearbeitet wird; bei bl open melden und mit Zeitstempel beiseitelegen."""
+    """Idle backup of the last worker: abort on a silent start (bl run/save/…) so work does not continue on the
+    old state; on bl open report it and move it aside with a timestamp."""
     f = sd / "autosave.blend"
     if not f.is_file():
         return
     if implicit:
-        raise Fail("✗ Der letzte Worker endete im Leerlauf mit ungespeicherten Änderungen, gesichert in {}.\n"
-                   "  Weiter damit: `bl open {}` · alten Stand laden und Sicherung beiseitelegen: `bl open`".format(f, f))
+        raise Fail("✗ The last worker ended while idle with unsaved changes, backed up to {}.\n"
+                   "  Continue with it: `bl open {}` · load the old state and move the backup aside: `bl open`".format(f, f))
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(f.stat().st_mtime))
     dst, i = sd / "autosave_{}.blend".format(stamp), 1
     while dst.exists():
         i += 1
         dst = sd / "autosave_{}_{}.blend".format(stamp, i)
     f.rename(dst)
-    out("⚠ Der letzte Worker endete im Leerlauf mit ungespeicherten Änderungen; gesichert: {}  (`bl open {}`)".format(dst, dst))
+    out("⚠ The last worker ended while idle with unsaved changes; backup: {}  (`bl open {}`)".format(dst, dst))
 
 
 def start_worker(blend=None, quiet=False, implicit=False):
     sd = core.state_dir()
+    if not os.path.exists(blender_exe()):
+        raise Fail("✗ Blender not found at {}: set BL_BLENDER_DIR or put 'blender' on PATH".format(blender_exe()), 3)
     if blend is not None and Path(blend).resolve() == (sd / "autosave.blend").resolve():
-        # bl open <autosave>: erst beiseitelegen, dann die beiseitegelegte Datei öffnen
+        # bl open <autosave>: move it aside first, then open the moved file
         _autosave_hint(sd, False)
         blend = sorted(sd.glob("autosave_*.blend"), key=lambda p: p.stat().st_mtime)[-1]
     else:
@@ -182,7 +185,7 @@ def start_worker(blend=None, quiet=False, implicit=False):
     while time.time() < deadline:
         if p.poll() is not None:
             tail = log.read_text(errors="replace").strip().splitlines()[-6:]
-            raise Fail("Worker beendet beim Start (Exit {}):\n  ".format(p.returncode) + "\n  ".join(tail) + "\n  Log: " + str(log), 3)
+            raise Fail("worker exited during start (exit {}):\n  ".format(p.returncode) + "\n  ".join(tail) + "\n  log: " + str(log), 3)
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 break
@@ -190,11 +193,11 @@ def start_worker(blend=None, quiet=False, implicit=False):
             time.sleep(0.1)
     else:
         os.kill(p.pid, signal.SIGTERM)
-        raise Fail("Worker nicht erreichbar nach Timeout, Log: {}".format(log), 3)
+        raise Fail("worker not reachable after timeout, log: {}".format(log), 3)
     w = {"pid": p.pid, "port": port, "blend": str(blend) if blend else None, "started": time.time(), "log": str(log)}
     (sd / "worker.json").write_text(json.dumps(w))
     if not quiet:
-        out("✓ Worker pid {} port {} ({:.1f} s) Szene {}".format(p.pid, port, time.time() - t0, rel(blend) if blend else "leer"))
+        out("✓ worker pid {} port {} ({:.1f} s) scene {}".format(p.pid, port, time.time() - t0, rel(blend) if blend else "empty"))
     return w
 
 
@@ -205,12 +208,12 @@ def ensure_worker():
     pdir, vdir = active(need=False)
     blend = core.newest_blend(pdir, vdir) if pdir else None
     w = start_worker(blend, quiet=True, implicit=True)
-    out("(Worker gestartet: pid {} Szene {})".format(w["pid"], rel(blend) if blend else "leer"))
+    out("(worker started: pid {} scene {})".format(w["pid"], rel(blend) if blend else "empty"))
     return w
 
 
 def send(port, code, timeout):
-    """Code an die Bridge senden (Protokoll wie blmcp/tools_helpers/connection.py, GPL-3.0+)."""
+    """Send code to the bridge (protocol as in blmcp/tools_helpers/connection.py, GPL-3.0+)."""
     req = (json.dumps({"type": "execute", "code": code, "strict_json": True}) + "\0").encode()
     buf = bytearray()
     try:
@@ -222,23 +225,23 @@ def send(port, code, timeout):
                     break
                 buf.extend(chunk)
     except socket.timeout:
-        raise Fail("Zeitüberschreitung nach {:.0f} s (Worker rechnet evtl. noch; `--timeout` erhöhen oder `bl close`)".format(timeout), 3)
+        raise Fail("timeout after {:.0f} s (the worker may still be computing; raise `--timeout` or `bl close`)".format(timeout), 3)
     except OSError as ex:
-        raise Fail("Worker nicht erreichbar ({}); `bl open`".format(ex), 3)
+        raise Fail("worker not reachable ({}); `bl open`".format(ex), 3)
     if not buf:
-        raise Fail("leere Antwort vom Worker", 3)
+        raise Fail("empty response from worker", 3)
     return json.loads(buf.partition(b"\0")[0].decode())
 
 
 def call(code, timeout=600, prefer_file=None):
-    """Führt Code im Worker aus, gibt result zurück. Fehler → Fail mit einer Zeile + Log."""
+    """Run code in the worker, return result. Errors → Fail with one line + log."""
     w = ensure_worker()
     resp = send(w["port"], "import bllib\n" + code, timeout)
     if resp.get("status") != "ok":
         tb = resp.get("message", "")
         log = core.state_dir() / "last_error.txt"
         log.write_text(tb + ("\n--- stdout\n" + resp["stdout"] if resp.get("stdout") else ""))
-        raise Fail("✗ {}\n  Traceback: {}".format(core.error_line(tb, prefer_file), log), 2)
+        raise Fail("✗ {}\n  traceback: {}".format(core.error_line(tb, prefer_file), log), 2)
     r = resp.get("result", {})
     if resp.get("stdout"):
         r["_stdout"] = resp["stdout"]
@@ -246,7 +249,7 @@ def call(code, timeout=600, prefer_file=None):
 
 
 def worker_changed(w):
-    """True/False: ungespeicherte Skriptläufe im Worker; None: unbekannt (rechnet noch, alte bllib, Fehler)."""
+    """True/False: unsaved script runs in the worker; None: unknown (still computing, old bllib, error)."""
     try:
         resp = send(w["port"], "import bllib\nresult = {'changed': bllib.changed()}", 10)
     except Fail:
@@ -258,39 +261,39 @@ def worker_changed(w):
 
 
 def cmd_open(a):
-    # Ziel zuerst prüfen: ein Tippfehler darf den laufenden Worker nicht beenden
-    if a.leer:
+    # check the target first: a typo must not end the running worker
+    if a.empty:
         blend = None
     elif a.blend:
         blend = Path(a.blend).resolve()
         if not blend.is_file():
-            raise Fail("Datei fehlt: {}".format(blend))
+            raise Fail("file missing: {}".format(blend))
     else:
         pdir, vdir = active(need=False)
         blend = core.newest_blend(pdir, vdir) if pdir else None
     w = worker_info()
     if w:
         changed = worker_changed(w)
-        if changed is not False and not a.verwerfen:
-            why = "hat ungespeicherte Änderungen" if changed else "antwortet nicht eindeutig (rechnet noch oder alte bllib), Zustand unbekannt"
-            raise Fail("✗ offene Szene {} (Worker pid {}, Szene {}): erst `bl save`, oder `bl open … --verwerfen`".format(
-                why, w["pid"], rel(w["blend"]) if w["blend"] else "leer"))
-        cmd_close(argparse.Namespace(save=False, verwerfen=True))
+        if changed is not False and not a.discard:
+            why = "has unsaved changes" if changed else "does not answer clearly (still computing or old bllib), state unknown"
+            raise Fail("✗ open scene {} (worker pid {}, scene {}): `bl save` first, or `bl open … --discard`".format(
+                why, w["pid"], rel(w["blend"]) if w["blend"] else "empty"))
+        cmd_close(argparse.Namespace(save=False, discard=True))
     start_worker(blend)
 
 
 def cmd_close(a):
     w = worker_info()
     if not w:
-        out("kein Worker aktiv")
+        out("no active worker")
         return
     if a.save:
         cmd_save(argparse.Namespace(**{"as": None}))
-    elif not getattr(a, "verwerfen", False):
+    elif not getattr(a, "discard", False):
         changed = worker_changed(w)
         if changed is not False:
-            raise Fail("✗ {} (Worker pid {}): `bl close --save`, `bl save`, oder `bl close --verwerfen`".format(
-                "ungespeicherte Änderungen" if changed else "Zustand unbekannt (rechnet noch oder alte bllib)", w["pid"]))
+            raise Fail("✗ {} (worker pid {}): `bl close --save`, `bl save`, or `bl close --discard`".format(
+                "unsaved changes" if changed else "state unknown (still computing or old bllib)", w["pid"]))
     try:
         send(w["port"], "import bllib\nbllib._request_quit()\nresult = {}", 10)
     except Fail:
@@ -298,7 +301,7 @@ def cmd_close(a):
     pending = core.state_dir() / "autosave.blend.pending"
     t_end = time.time() + 5
     while _alive(w["pid"]):
-        if pending.exists():  # Worker sichert gerade im Leerlauf: nicht abschießen
+        if pending.exists():  # worker is writing its idle backup right now: do not kill it
             t_end = max(t_end, time.time() + 1)
             if time.time() - pending.stat().st_mtime > 600:
                 break
@@ -308,33 +311,33 @@ def cmd_close(a):
     if _alive(w["pid"]):
         os.kill(w["pid"], signal.SIGTERM)
     (core.state_dir() / "worker.json").unlink(missing_ok=True)
-    out("✓ Worker beendet (pid {})".format(w["pid"]))
+    out("✓ worker stopped (pid {})".format(w["pid"]))
 
 
 # --------------------------------------------------------------------------- run / info / look / save
 
 def cmd_run(a):
     _pdir, vdir = active()
-    sk = vdir / "skripte"
+    sk = vdir / "scripts"
     sk.mkdir(parents=True, exist_ok=True)
     try:
         args = core.parse_set(a.set)
     except ValueError as ex:
         raise Fail("✗ " + str(ex))
     if a.name and len(a.scripts) > 1:
-        out("  Hinweis: --name gilt nur für ein Skript; die Kette nutzt die Dateinamen")
+        out("  note: --name applies to a single script only; the chain uses the file names")
     if a.e is not None:
-        jobs = [(a.e, a.name or "schritt")]
+        jobs = [(a.e, a.name or "step")]
     else:
         jobs = []
         for sc in a.scripts:
             f = Path(sc)
             if not f.is_file():
-                raise Fail("Skript fehlt: {}".format(f))
+                raise Fail("script missing: {}".format(f))
             jobs.append((f.read_text(encoding="utf-8"), a.name if (a.name and len(a.scripts) == 1) else f.stem))
     reported = []
     for i, (src, stem) in enumerate(jobs):
-        j, neu = core.journal_file(sk, stem, src, args)
+        j, new = core.journal_file(sk, stem, src, args)
         t0 = time.time()
         try:
             r = call("import json\nresult = bllib.run_file({!r}, json.loads({!r}))".format(str(j), json.dumps(args)),
@@ -342,11 +345,11 @@ def cmd_run(a):
         except Fail as ex:
             core.journal_count(j, ok=False)
             if len(jobs) > 1:
-                ex.args = (str(ex) + "\n  Kette abgebrochen bei Skript {}/{}; nicht ausgeführt: {}".format(
+                ex.args = (str(ex) + "\n  chain aborted at script {}/{}; not run: {}".format(
                     i + 1, len(jobs), ", ".join(st for _s, st in jobs[i + 1:]) or "-"),)
             raise
         runs = core.journal_count(j, ok=True)
-        out("✓ {}{} ({:.2f} s)".format(rel(j), "" if neu else " (unverändert, Lauf {})".format(runs), time.time() - t0))
+        out("✓ {}{} ({:.2f} s)".format(rel(j), "" if new else " (unchanged, run {})".format(runs), time.time() - t0))
         if r.get("_stdout"):
             out(*core.clip_lines(("  | " + ln for ln in r["_stdout"].rstrip().splitlines()), a.lines))
         res = r.get("result") or {}
@@ -354,7 +357,7 @@ def cmd_run(a):
             out("  result " + core.clip_text(json.dumps(res, ensure_ascii=False), 400))
         if a.report:
             reps = r.get("reports") or []
-            out(*(["  " + ln for ln in core.clip_lines(reps, 20)] if reps else ["  (nichts markiert: report(obj) im Skript)"]))
+            out(*(["  " + ln for ln in core.clip_lines(reps, 20)] if reps else ["  (nothing marked: report(obj) in the script)"]))
         reported += [n for n in r.get("reported") or [] if n not in reported]
     if a.look:
         do_look(names=reported or None, views=["iso"], mode="solid", size=a.size, sheet=False)
@@ -369,55 +372,55 @@ def cmd_info(a):
 
 
 def compare_ref(arg, pdir, vdir):
-    """Vergleichsstand: 'auto' = zuletzt gespeicherte .blend (aktive Version, sonst ältere), sonst Pfad."""
+    """Reference state: 'auto'/'start' = start state of the version, 'last' = last `bl save`, else a path."""
     if arg in ("auto", "start", "last"):
         start = vdir / "blend" / (pdir.name + "_start.blend")
         last = vdir / "blend" / (pdir.name + ".blend")
-        if arg == "last":  # zuletzt per `bl save` gespeicherter Zwischenstand
+        if arg == "last":  # intermediate state last saved with `bl save`
             ref = last if last.is_file() else (start if start.is_file() else core.newest_blend(pdir, vdir))
-        else:  # Startstand der Version (von `bl version`); `bl save` überschreibt ihn nicht
+        else:  # start state of the version (from `bl version`); `bl save` does not overwrite it
             ref = start if start.is_file() else core.newest_blend(pdir, vdir)
         if ref is None:
-            raise Fail("kein gespeicherter Stand zum Vergleichen: vor der Änderung `bl version \"<label>\"` oder `bl save`")
+            raise Fail("no saved state to compare with: `bl version \"<label>\"` or `bl save` before the change")
         return ref
     ref = Path(arg).resolve()
     if not ref.is_file():
-        raise Fail("Vergleichsdatei fehlt: {}".format(ref))
+        raise Fail("comparison file missing: {}".format(ref))
     return ref
 
 
 def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=None, radius=None, section=None,
             engine=None, samples=None):
     pdir, vdir = active()
-    vor = vdir / "vorschau"
-    vor.mkdir(parents=True, exist_ok=True)
+    prev = vdir / "preview"
+    prev.mkdir(parents=True, exist_ok=True)
     stem = label if label != "look" else "_".join(["sheet"] if sheet else views) + ("_" + mode if mode != "solid" else "")
     ref = compare_ref(compare, pdir, vdir) if compare else None
     if focus and label == "look":
-        stem += "_ausschnitt"
+        stem += "_closeup"
     if section and label == "look":
-        stem = "schnitt-" + section.replace("=", "").replace(".", "_") + ("_" + mode if mode != "solid" else "")
+        stem = "section-" + section.replace("=", "").replace(".", "_") + ("_" + mode if mode != "solid" else "")
     if ref:
-        stem += "_vergleich" if label == "look" else ""
-    path = core.next_numbered(vor, stem, ".png")
+        stem += "_compare" if label == "look" else ""
+    path = core.next_numbered(prev, stem, ".png")
     panel = size // 2 if (sheet or ref) else size
     r = call("result = bllib.look({!r}, views={!r}, names={!r}, mode={!r}, panel={}, sheet={}, compare={!r}, focus={!r}, radius_mm={!r}, "
              "section={!r}, engine={!r}, samples={!r})".format(
                  str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius, section, engine, samples))
-    out("✓ Bild {}  {}×{} px (≈{} Token)  1 px = {} mm".format(
+    out("✓ image {}  {}×{} px (≈{} tokens)  1 px = {} mm".format(
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
     if r.get("engine"):
-        out("  Engine {}".format(r["engine"]))
+        out("  engine {}".format(r["engine"]))
     if r.get("empty"):
-        out("  ⚠ LEER: in {} ist nichts zu sehen. Ausschnitt verfehlt? --focus x,y,z ist in mm.".format("/".join(r["empty"])))
+        out("  ⚠ EMPTY: nothing visible in {}. Closeup missed? --focus x,y,z is in mm.".format("/".join(r["empty"])))
     if r.get("ground"):
-        out("  Boden nicht gerahmt/gezeigt: {} (mit --obj gezielt wählen)".format(", ".join(r["ground"])))
+        out("  ground not framed/shown: {} (select it with --obj)".format(", ".join(r["ground"])))
     if ref:
         ch = r.get("changes") or []
         mx = max((c["pct"] for c in ch), default=0)
-        out("  Vergleich mit {}: {}".format(rel(ref), ", ".join("{} {:.1f} %".format(c["view"], c["pct"]) for c in ch)))
+        out("  compared with {}: {}".format(rel(ref), ", ".join("{} {:.1f} %".format(c["view"], c["pct"]) for c in ch)))
         if mx < 1:
-            out("  ⚠ kaum sichtbare Änderung (< 1 % der Objektfläche): wirkt die Änderung überhaupt? Nicht als sichtbare Verbesserung melden.")
+            out("  ⚠ barely visible change (< 1 % of the object area): does the change have any effect? Do not report it as a visible improvement.")
     return r
 
 
@@ -433,9 +436,9 @@ def cmd_look(a):
         except ValueError as ex:
             raise Fail("✗ " + str(ex))
         if a.sheet or a.view or a.mode == "cam":
-            raise Fail("✗ --section wählt die Blickrichtung selbst (senkrecht auf den Schnitt): ohne --sheet/--view/--mode cam")
+            raise Fail("✗ --section picks the view direction itself (perpendicular to the cut): no --sheet/--view/--mode cam")
     if (a.engine or a.samples) and a.mode != "cam":
-        raise Fail("✗ --engine/--samples nur mit --mode cam")
+        raise Fail("✗ --engine/--samples only with --mode cam")
     do_look(names, views, a.mode, a.size, (a.sheet or len(views) > 1) and not a.section, label=a.out or "look",
             compare=a.compare, focus=a.focus, radius=a.radius, section=a.section, engine=a.engine, samples=a.samples)
 
@@ -448,14 +451,14 @@ def cmd_save(a):
     if w:
         w["blend"] = r["path"]
         (core.state_dir() / "worker.json").write_text(json.dumps(w))
-    out("✓ gespeichert {} ({:.1f} MB)".format(rel(r["path"]), r["bytes"] / 1e6))
+    out("✓ saved {} ({:.1f} MB)".format(rel(r["path"]), r["bytes"] / 1e6))
 
 
 def _positive(typ):
     def f(v):
         x = typ(v)
         if x <= 0:
-            raise argparse.ArgumentTypeError("muss > 0 sein, nicht {}".format(v))
+            raise argparse.ArgumentTypeError("must be > 0, not {}".format(v))
         return x
     return f
 
@@ -464,40 +467,40 @@ def cmd_qa(a):
     _pdir, vdir = active()
     qdir = Path(os.environ.get("BL_QA_DIR", str(Path.home() / "repos/blender-skills/skills/blender-asset-qa/scripts")))
     if not (qdir / "qa_check.py").is_file():
-        raise Fail("✗ qa_check.py fehlt unter {} (Repo blender-skills, oder BL_QA_DIR setzen)".format(qdir), 3)
+        raise Fail("✗ qa_check.py missing under {} (repo EL4CTEO/blender-skills, or set BL_QA_DIR)".format(qdir), 3)
     r = call("result = bllib.qa({!r}, {!r}, {!r}, {!r}, {!r}, qa_dir={!r})".format(
         a.obj or None, a.profile, a.budget, a.eps, a.tol, str(qdir)), timeout=a.timeout)
-    mdir = vdir / "messung"
+    mdir = vdir / "measurements"
     mdir.mkdir(parents=True, exist_ok=True)
     f = core.next_numbered(mdir, "qa-" + a.profile, ".json")
     f.write_text(json.dumps(r, ensure_ascii=False, indent=1), encoding="utf-8")
-    head = "{} qa {} · Profil {}{} · Tris {}{} · {} Fehler, {} Warnungen".format(
-        "✓" if r["pass"] else "✗", "bestanden" if r["pass"] else "nicht bestanden", r["profile"],
-        " · je Objekt einzeln" if r.get("einzeln") else " · als ein Asset", r["tris"],
-        " / Budget {}".format(r["budget"]) if r.get("budget") else "", len(r["errors"]), len(r["warnings"]))
+    head = "{} qa {} · profile {}{} · tris {}{} · {} errors, {} warnings".format(
+        "✓" if r["pass"] else "✗", "passed" if r["pass"] else "failed", r["profile"],
+        " · each object separately" if r.get("per_object") else " · as one asset", r["tris"],
+        " / budget {}".format(r["budget"]) if r.get("budget") else "", len(r["errors"]), len(r["warnings"]))
     lines = [head]
-    lines += ["  FEHLER  " + e for e in core.clip_lines(r["errors"], a.lines)]
-    lines += ["  Warnung " + w for w in core.clip_lines(r["warnings"], a.lines)]
+    lines += ["  ERROR   " + e for e in core.clip_lines(r["errors"], a.lines)]
+    lines += ["  warning " + w for w in core.clip_lines(r["warnings"], a.lines)]
     for n, o in list(r["objects"].items())[:20]:
-        lines.append("  {}  tris {}  Teile {}  {} mm".format(n, o["tris"], o.get("islands", "-"),
+        lines.append("  {}  tris {}  parts {}  {} mm".format(n, o["tris"], o.get("islands", "-"),
                                                           "×".join("{:g}".format(x) for x in o["dims_mm"])))
     if r.get("ground"):
-        lines.append("  ohne Bodenplatte: {} (mit --obj gezielt prüfen)".format(", ".join(r["ground"])))
-    lines.append("  Bericht {}".format(rel(f)))
+        lines.append("  ground plane skipped: {} (check it with --obj)".format(", ".join(r["ground"])))
+    lines.append("  report {}".format(rel(f)))
     if not r["pass"]:
         raise Fail("\n".join(lines), 1)
     out(*lines)
 
 
-# --------------------------------------------------------------------------- doctor
+# --------------------------------------------------------------------------- docs / doctor
 
 def cmd_docs(a):
     import docs
     if not docs.available():
-        raise Fail("✗ Doku-Daten fehlen unter {} → bash tools/install.sh".format(docs.docs_dir()), 3)
-    q = " ".join(a.begriff).strip()
+        raise Fail("✗ documentation data missing under {} → bash tools/install.sh (with BL_DOCS_SRC)".format(docs.docs_dir()), 3)
+    q = " ".join(a.terms).strip()
     width = 220
-    if not a.manual and a.hit is None and len(a.begriff) == 1:
+    if not a.manual and a.hit is None and len(a.terms) == 1:
         r = docs.lookup(q)
         if r:
             f, lines = r
@@ -505,28 +508,28 @@ def cmd_docs(a):
             out("{}  ({})".format(q, f.name))
             wrapped = [w for ln in lines for w in (textwrap.wrap(docs.clean(ln), width, subsequent_indent="    ",
                                                                  break_on_hyphens=False) or [""])]
-            out(*core.clip_lines(wrapped, a.zeilen))  # umbrechen statt kürzen: Signaturen vollständig
+            out(*core.clip_lines(wrapped, a.lines))  # wrap instead of truncating: signatures stay complete
             return
     scope = "manual" if a.manual else "api"
     r = docs.search(q, scope, a.n, a.hit)
     hits = r.get("hits") or []
     if not hits:
-        raise Fail("✗ nichts gefunden in {} für {!r} (alle Wörter müssen vorkommen; weniger/andere Begriffe{})".format(
-            scope, q, "" if a.manual else ", oder --manual"), 1)
-    per = a.zeilen if a.hit is not None else max(3, a.zeilen // len(hits))
+        raise Fail("✗ nothing found in {} for {!r} (all words must occur; fewer/other terms{})".format(
+            scope, q, "" if a.manual else ", or --manual"), 1)
+    per = a.lines if a.hit is not None else max(3, a.lines // len(hits))
     for h in hits:
         i = h["index"] if a.hit is None else a.hit
         out("[{}] {}{}".format(i, h["path"], " · " + h["breadcrumb"] if h.get("breadcrumb") else ""))
         body = [ln for ln in h["text"].splitlines() if ln.strip()]
         out(*("    " + ln for ln in core.clip_lines((core.clip_text(docs.clean(x), width) for x in body), per)))
     if a.hit is None:
-        out("mehr zu Treffer i: bl docs {}{} --hit i{}".format(q if " " not in q else repr(q), " --manual" if a.manual else "",
-                                                       "  (gekürzt, weitere Treffer: -n)" if r.get("truncated") else ""))
+        out("more on hit i: bl docs {}{} --hit i{}".format(q if " " not in q else repr(q), " --manual" if a.manual else "",
+                                                       "  (truncated, more hits: -n)" if r.get("truncated") else ""))
 
 
 def cmd_doctor(a):
     ok = True
-    out("Host {}  Sitzung {}  Repo {} ({})".format(socket.gethostname(), core.session_key(), REPO, _git_rev()))
+    out("host {}  session {}  repo {} ({})".format(socket.gethostname(), core.session_key(), REPO, _git_rev()))
     exe = blender_exe()
     if os.path.exists(exe):
         v = subprocess.run([exe, "-b", "--factory-startup", "--version"], capture_output=True, text=True,
@@ -534,24 +537,24 @@ def cmd_doctor(a):
         out("Blender {}  ({})".format(v[0] if v else "?", exe))
     else:
         ok = False
-        out("✗ Blender fehlt: {}".format(exe))
+        out("✗ Blender missing: {} (set BL_BLENDER_DIR or put 'blender' on PATH)".format(exe))
     try:
         g = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.used,memory.total,utilization.gpu",
                             "--format=csv,noheader"], capture_output=True, text=True, timeout=10).stdout.strip()
         out(*("GPU " + ln for ln in g.splitlines()))
     except (OSError, subprocess.TimeoutExpired):
-        out("GPU: nvidia-smi nicht verfügbar")
+        out("GPU: nvidia-smi not available")
     r = core.root()
     if r.is_dir():
         du = shutil.disk_usage(r)
-        out("Ablage {}  frei {:.0f} GB von {:.0f} GB".format(r, du.free / 1e9, du.total / 1e9))
+        out("storage {}  free {:.0f} GB of {:.0f} GB".format(r, du.free / 1e9, du.total / 1e9))
     else:
         ok = False
-        out("✗ Ablage fehlt: {}".format(r))
+        out("✗ storage missing: {} (create it or set BL_ROOT)".format(r))
     pil = list((REPO / ".deps").glob("PIL/__init__.py"))
     if not pil:
         ok = False
-    out("PIL im Worker: {}".format("ok ({})".format(REPO / ".deps") if pil else "✗ fehlt → bash tools/install.sh"))
+    out("PIL in worker: {}".format("ok ({})".format(REPO / ".deps") if pil else "✗ missing → bash tools/install.sh"))
     try:
         import docs
         dv = docs.available()
@@ -559,23 +562,23 @@ def cmd_doctor(a):
         dv = {}
     if not dv:
         ok = False
-    out("Doku (bl docs): {}".format("ok (api {api}, manual {manual} Dateien)".format(**{"api": 0, "manual": 0, **dv}) if dv
-                                    else "✗ fehlt → bash tools/install.sh"))
+    out("docs (bl docs): {}".format("ok (api {api}, manual {manual} files)".format(**{"api": 0, "manual": 0, **dv}) if dv
+                                    else "✗ missing → bash tools/install.sh (with BL_DOCS_SRC)"))
     pdir, vdir = active(need=False)
-    out("Projekt {}  Version {}".format(pdir.name if pdir else "-", vdir.name if vdir else "-"))
+    out("project {}  version {}".format(pdir.name if pdir else "-", vdir.name if vdir else "-"))
     ws = []
     base = core.state_base()
     for sd in sorted(base.iterdir()) if base.is_dir() else []:
         w = worker_info(sd)
         if w:
-            ws.append("  {} pid {} port {} Szene {} seit {:.0f} min".format(
-                sd.name, w["pid"], w["port"], rel(w["blend"]) if w["blend"] else "leer", (time.time() - w["started"]) / 60))
-    out("Worker: {}".format(len(ws)), *ws)
+            ws.append("  {} pid {} port {} scene {} for {:.0f} min".format(
+                sd.name, w["pid"], w["port"], rel(w["blend"]) if w["blend"] else "empty", (time.time() - w["started"]) / 60))
+    out("workers: {}".format(len(ws)), *ws)
     sk = Path.home() / ".claude" / "skills"
     names = sorted(p.name for p in sk.iterdir() if p.name.startswith("blender")) if sk.is_dir() else []
-    out("Skills (~/.claude/skills): {}".format(", ".join(names) or "-"))
+    out("skills (~/.claude/skills): {}".format(", ".join(names) or "-"))
     if not ok:
-        raise Fail("doctor: Probleme gefunden", 3)
+        raise Fail("doctor: problems found", 3)
 
 
 def _git_rev():
@@ -588,80 +591,80 @@ def _git_rev():
 # --------------------------------------------------------------------------- main
 
 def build_parser():
-    ap = argparse.ArgumentParser(prog="bl", description="Blender per Skript (headless, ohne MCP). Exit: 0 ok, 1 Befund, 2 Fehler, 3 Infrastruktur.")
+    ap = argparse.ArgumentParser(prog="bl", description="Blender by script (headless, no MCP). Exit: 0 ok, 1 finding, 2 error, 3 infrastructure.")
     sp = ap.add_subparsers(dest="cmd", required=True)
-    p = sp.add_parser("projekt", help="Projekt wählen/anlegen (unter BL_ROOT)")
+    p = sp.add_parser("project", help="select/create a project (under BL_ROOT)")
     p.add_argument("name")
-    p.set_defaults(fn=cmd_projekt)
-    p = sp.add_parser("version", help="neue Version vNNN_<label>; offene Szene wird hineingespeichert")
+    p.set_defaults(fn=cmd_project)
+    p = sp.add_parser("version", help="new version vNNN_<label>; the open scene is saved into it")
     p.add_argument("label")
     p.set_defaults(fn=cmd_version)
-    p = sp.add_parser("ls", help="Versionen des Projekts (oder alle Projekte mit --all)")
+    p = sp.add_parser("ls", help="versions of the project (or all projects with --all)")
     p.add_argument("--all", action="store_true")
     p.set_defaults(fn=cmd_ls)
-    p = sp.add_parser("open", help="Worker starten (Standard: neueste .blend der aktiven Version)")
+    p = sp.add_parser("open", help="start the worker (default: newest .blend of the active version)")
     p.add_argument("blend", nargs="?")
-    p.add_argument("--leer", action="store_true", help="leere Szene statt neuester Datei")
-    p.add_argument("--verwerfen", action="store_true", help="laufenden Worker auch mit ungespeicherten Änderungen umschalten")
+    p.add_argument("--empty", action="store_true", help="empty scene instead of the newest file")
+    p.add_argument("--discard", action="store_true", help="switch the running worker even with unsaved changes")
     p.set_defaults(fn=cmd_open)
-    p = sp.add_parser("close", help="Worker beenden")
-    p.add_argument("--save", action="store_true", help="vorher speichern")
-    p.add_argument("--verwerfen", action="store_true", help="auch mit ungespeicherten Änderungen beenden")
+    p = sp.add_parser("close", help="stop the worker")
+    p.add_argument("--save", action="store_true", help="save first")
+    p.add_argument("--discard", action="store_true", help="stop even with unsaved changes")
     p.set_defaults(fn=cmd_close)
-    p = sp.add_parser("run", help="Skript(e) in der offenen Szene ausführen, nacheinander (wird nach skripte/ protokolliert)")
-    p.add_argument("scripts", nargs="*", metavar="skript.py")
-    p.add_argument("--set", action="append", metavar="NAME=WERT", help="Parameter fürs Skript als args[NAME] (Wert als JSON, sonst Text)")
-    p.add_argument("-e", metavar="CODE", help="Code direkt statt Datei")
-    p.add_argument("--name", help="Name im Skript-Protokoll")
-    p.add_argument("--report", action="store_true", help="Messwerte der mit report() markierten Objekte")
-    p.add_argument("--look", action="store_true", help="danach iso-Bild der markierten (sonst aller) Objekte")
+    p = sp.add_parser("run", help="run script(s) in the open scene, one after another (journaled in scripts/)")
+    p.add_argument("scripts", nargs="*", metavar="script.py")
+    p.add_argument("--set", action="append", metavar="NAME=VALUE", help="script parameter as args[NAME] (value as JSON, else text)")
+    p.add_argument("-e", metavar="CODE", help="code directly instead of a file")
+    p.add_argument("--name", help="name in the script journal")
+    p.add_argument("--report", action="store_true", help="measurements of the objects marked with report()")
+    p.add_argument("--look", action="store_true", help="afterwards an iso image of the marked (else all) objects")
     p.add_argument("--size", type=int, default=768)
     p.add_argument("--timeout", type=float, default=600)
-    p.add_argument("--lines", type=int, default=15, help="max. Zeilen print-Ausgabe")
+    p.add_argument("--lines", type=int, default=15, help="max. lines of print output")
     p.set_defaults(fn=cmd_run)
-    p = sp.add_parser("info", help="kompakte Szenenauskunft; --obj NAME für Details")
+    p = sp.add_parser("info", help="compact scene summary; --obj NAME for details")
     p.add_argument("--obj")
     p.add_argument("--limit", type=int, default=40)
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_info)
-    p = sp.add_parser("look", help="Bild rendern (Workbench, ortho, gerahmt) nach vorschau/")
+    p = sp.add_parser("look", help="render an image (Workbench, ortho, framed) into preview/")
     p.add_argument("--view", action="append", choices=sorted(["iso", "front", "back", "right", "left", "top", "bottom"]))
-    p.add_argument("--sheet", action="store_true", help="iso/front/right/top in einem Bild")
-    p.add_argument("--obj", action="append", help="nur diese Objekte (mehrfach)")
+    p.add_argument("--sheet", action="store_true", help="iso/front/right/top in one image")
+    p.add_argument("--obj", action="append", help="only these objects (repeatable)")
     p.add_argument("--mode", default="solid", choices=["solid", "wire", "cam"])
-    p.add_argument("--size", type=int, default=768, help="Bildbreite in px")
-    p.add_argument("--out", help="Name im Bild-Protokoll")
+    p.add_argument("--size", type=int, default=768, help="image width in px")
+    p.add_argument("--out", help="name in the image journal")
     p.add_argument("--compare", nargs="?", const="auto", metavar="BLEND",
-                   help="vorher/jetzt nebeneinander mit gleicher Kamera; ohne Wert oder 'start': Startstand der Version, "
-                        "'last': zuletzt per bl save gespeicherter Stand, sonst Pfad")
-    p.add_argument("--focus", metavar="OBJ|x,y,z", help="Ausschnitt um ein Objekt oder einen Punkt x,y,z in mm")
-    p.add_argument("--radius", type=float, metavar="MM", help="Radius des Ausschnitts in mm")
-    p.add_argument("--section", metavar="x|y|z=MM", help="Schnitt an der Ebene (mm), Blick senkrecht darauf; Schnittfläche rot")
-    p.add_argument("--engine", choices=["eevee", "cycles", "workbench"], help="nur --mode cam: Engine für dieses Bild")
-    p.add_argument("--samples", type=int, help="nur --mode cam: Samples (EEVEE/Cycles) für dieses Bild")
+                   help="before/now side by side with the same camera; no value or 'start': start state of the version, "
+                        "'last': state last saved with bl save, else a path")
+    p.add_argument("--focus", metavar="OBJ|x,y,z", help="closeup around an object or a point x,y,z in mm")
+    p.add_argument("--radius", type=float, metavar="MM", help="radius of the closeup in mm")
+    p.add_argument("--section", metavar="x|y|z=MM", help="cut at the plane (mm), view perpendicular to it; cut faces red")
+    p.add_argument("--engine", choices=["eevee", "cycles", "workbench"], help="--mode cam only: engine for this image")
+    p.add_argument("--samples", type=int, help="--mode cam only: samples (EEVEE/Cycles) for this image")
     p.set_defaults(fn=cmd_look)
-    p = sp.add_parser("qa", help="Prüfung mit Zahlen (EL4CTEO asset-qa + kaputte Flächen + Polybudget); Exit 1 bei Fehlern")
-    p.add_argument("--obj", action="append", help="diese Objekte zusammen als ein Asset (Standard: jedes sichtbare Mesh einzeln, ohne Bodenplatte)")
+    p = sp.add_parser("qa", help="check with numbers (EL4CTEO asset-qa + broken faces + poly budget); exit 1 on errors")
+    p.add_argument("--obj", action="append", help="these objects together as one asset (default: each visible mesh separately, without ground plane)")
     p.add_argument("--profile", default="game", choices=["game", "render", "print", "roblox"],
-                   help="game: UV/Maßstab/Normalen streng · render: nachsichtig · print: wasserdicht")
-    p.add_argument("--budget", type=_positive(int), metavar="TRIS", help="Polybudget (Tris gesamt)")
-    p.add_argument("--eps", type=_positive(float), metavar="M", help="z-fighting-Abstand in m (Standard 0,001)")
-    p.add_argument("--tol", type=_positive(float), metavar="M", help="Kontakttoleranz für schwebende Teile in m (Standard 0,002)")
+                   help="game: UV/scale/normals strict · render: lenient · print: watertight")
+    p.add_argument("--budget", type=_positive(int), metavar="TRIS", help="poly budget (total tris)")
+    p.add_argument("--eps", type=_positive(float), metavar="M", help="z-fighting distance in m (default 0.001)")
+    p.add_argument("--tol", type=_positive(float), metavar="M", help="contact tolerance for floating parts in m (default 0.002)")
     p.add_argument("--lines", type=int, default=15)
     p.add_argument("--timeout", type=float, default=600)
     p.set_defaults(fn=cmd_qa)
-    p = sp.add_parser("save", help="Szene in blend/ der aktiven Version speichern")
-    p.add_argument("--as", help="Dateiname (ohne .blend)")
+    p = sp.add_parser("save", help="save the scene into blend/ of the active version")
+    p.add_argument("--as", help="file name (without .blend)")
     p.set_defaults(fn=cmd_save)
-    p = sp.add_parser("docs", help="Blender-API/Handbuch offline: exakter Name (bpy.types.Object.matrix_world, "
-                                   "bmesh.ops.bevel) oder Suchbegriffe; ohne Worker")
-    p.add_argument("begriff", nargs="+")
-    p.add_argument("--manual", action="store_true", help="im Handbuch statt in der API suchen")
-    p.add_argument("-n", type=int, default=5, help="Anzahl Treffer der Suche (Standard 5)")
-    p.add_argument("--hit", type=int, metavar="I", help="Treffer I der Suche mit mehr Kontext")
-    p.add_argument("--zeilen", type=int, default=30, help="Ausgabe höchstens so viele Zeilen (Standard 30)")
+    p = sp.add_parser("docs", help="Blender API/manual offline: exact name (bpy.types.Object.matrix_world, "
+                                   "bmesh.ops.bevel) or search terms; no worker needed")
+    p.add_argument("terms", nargs="+")
+    p.add_argument("--manual", action="store_true", help="search the manual instead of the API")
+    p.add_argument("-n", type=int, default=5, help="number of search hits (default 5)")
+    p.add_argument("--hit", type=int, metavar="I", help="search hit I with more context")
+    p.add_argument("--lines", type=int, default=30, help="print at most this many lines (default 30)")
     p.set_defaults(fn=cmd_docs)
-    p = sp.add_parser("doctor", help="Umgebung prüfen")
+    p = sp.add_parser("doctor", help="check the environment")
     p.set_defaults(fn=cmd_doctor)
     return ap
 
@@ -669,7 +672,7 @@ def build_parser():
 def main(argv=None):
     a = build_parser().parse_args(argv)
     if a.cmd == "run" and bool(a.scripts) == (a.e is not None):
-        print("✗ bl run: <skript.py …> oder -e CODE (nicht beides)", file=sys.stderr)
+        print("✗ bl run: <script.py …> or -e CODE (not both)", file=sys.stderr)
         return 2
     try:
         a.fn(a)

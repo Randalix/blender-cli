@@ -1,8 +1,8 @@
-"""bl docs — Blender-Python-API und Handbuch offline nachschlagen, ohne Blender-Worker.
+"""bl docs — look up the Blender Python API and manual offline, without a Blender worker.
 
-Daten: RST-Kopie aus dem offiziellen Blender-MCP (Commit dbbf836, passt zu Blender 5.2: von 1746 RNA-Klassen fehlen
-3 interne), von tools/install.sh nach <repo>/.docs/{api,manual} kopiert. Volltextsuche: vendor/bl_docs (GPL-3.0+).
-Exakte Namen (bpy.types.Object.matrix_world, bmesh.ops.bevel) liest dieses Modul direkt aus der RST-Datei."""
+Data: RST copy from the official Blender MCP (commit dbbf836, matches Blender 5.2: of 1746 RNA classes 3 internal ones
+are missing), copied by tools/install.sh to <repo>/.docs/{api,manual}. Full-text search: vendor/bl_docs (GPL-3.0+).
+Exact names (bpy.types.Object.matrix_world, bmesh.ops.bevel) are read directly from the RST file by this module."""
 import os
 import re
 import sys
@@ -19,13 +19,13 @@ def docs_dir() -> Path:
 
 
 def available() -> dict:
-    """Anzahl RST-Dateien je Bereich; leer, wenn die Daten fehlen."""
+    """Number of RST files per scope; empty if the data is missing."""
     d = docs_dir()
     return {s: sum(1 for _ in (d / s).rglob("*.rst")) for s in ("api", "manual") if (d / s).is_dir()}
 
 
 def clean(line: str) -> str:
-    """RST-Rollen und Literal-Markierungen entfernen: :class:`Material` → Material, ``'OBJECT'`` → 'OBJECT'."""
+    """Strip RST roles and literal markup: :class:`Material` → Material, ``'OBJECT'`` → 'OBJECT'."""
     return ROLE.sub(r"\1", line).replace("``", "")
 
 
@@ -34,8 +34,8 @@ def _name(sig: str) -> str:
 
 
 def member_block(text: str, name: str):
-    """Block der Direktive `name` (Attribut, Methode, Funktion, Klasse) aus RST-Text, eingerückt bereinigt.
-    Bei einer Klasse nur Kopf und Beschreibung plus die Namen ihrer Mitglieder. → Liste von Zeilen oder None."""
+    """Block of directive `name` (attribute, method, function, class) from RST text, dedented.
+    For a class only the header and description plus the names of its members. → list of lines or None."""
     lines = text.splitlines()
     for i, ln in enumerate(lines):
         m = DIRECTIVE.match(ln)
@@ -57,7 +57,7 @@ def member_block(text: str, name: str):
                     head.append(b)
             out = [ln.strip()] + _dedent(head)
             if members:
-                out += ["", "Mitglieder ({}): {}".format(len(members), ", ".join(members))]
+                out += ["", "members ({}): {}".format(len(members), ", ".join(members))]
             return _trim(out)
         return _trim([ln.strip()] + _dedent(body))
     return None
@@ -81,8 +81,8 @@ def _bases(text: str):
 
 
 def lookup(symbol: str, api=None):
-    """Exakter Name → (datei, zeilen) oder None. Mitglieder werden auch in den Basisklassen gesucht
-    (bpy.types.Mesh.name steht bei ID). Ohne Modulpräfix wird bpy.types. probiert (Object.matrix_world)."""
+    """Exact name → (file, lines) or None. Members are also looked up in base classes
+    (bpy.types.Mesh.name is documented on ID). Without a module prefix bpy.types. is tried (Object.matrix_world)."""
     api = Path(api or docs_dir() / "api")
     if not SYMBOL.match(symbol) and "." not in symbol:
         if (api / "bpy.types.{}.rst".format(symbol)).is_file():
@@ -97,17 +97,17 @@ def lookup(symbol: str, api=None):
                 continue
             rest = parts[k:]
             text = f.read_text(encoding="utf-8", errors="replace")
-            if not rest:  # ganze Datei: Klasse oder Modul
+            if not rest:  # whole file: class or module
                 cls = member_block(text, parts[-1])
                 if cls:
                     return f, cls
                 names = [_name(m.group(3)) for m in map(DIRECTIVE.match, text.splitlines()) if m]
                 title = next((ln for ln in text.splitlines() if ln.strip()), sym)
-                return f, [title, "", "Einträge ({}): {}".format(len(names), ", ".join(names))]
+                return f, [title, "", "entries ({}): {}".format(len(names), ", ".join(names))]
             if len(rest) != 1:
                 break
             seen, todo = set(), [(f, text)]
-            while todo:  # Mitglied, notfalls in Basisklassen
+            while todo:  # member, falling back to base classes
                 ff, tt = todo.pop(0)
                 blk = member_block(tt, rest[0])
                 if blk:
@@ -122,10 +122,10 @@ def lookup(symbol: str, api=None):
 
 
 def search(query: str, scope: str = "api", n: int = 5, hit=None) -> dict:
-    """Volltextsuche (vendor/bl_docs, TF-IDF über Absätze). hit=i: Treffer i mit mehr Kontext."""
+    """Full-text search (vendor/bl_docs, TF-IDF over paragraphs). hit=i: hit i with more context."""
     for p in (REPO / ".deps", REPO / "vendor"):
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
     os.environ.setdefault("BL_DOCS_DIR", str(docs_dir()))
-    from bl_docs import rst_doc_search  # noqa: E402  (braucht docutils aus .deps)
+    from bl_docs import rst_doc_search  # noqa: E402  (needs docutils from .deps)
     return rst_doc_search.search(query=query, scope=scope, max_results=n, context=0, index=hit)

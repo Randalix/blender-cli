@@ -47,7 +47,7 @@ _DocTree = object
 
 
 def data_dir() -> str:
-    # bl: Daten liegen in <repo>/.docs (tools/install.sh), nicht neben dem Paket
+    # bl: data lives in <repo>/.docs (tools/install.sh), not next to the package
     return os.environ.get("BL_DOCS_DIR") or os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.normpath(os.path.abspath(__file__))))),
         ".docs",

@@ -52,7 +52,7 @@ check "Kiste nach Neustart da, z=2" bash -c "\"$BL\" info --obj Kiste | grep -q 
 o=$("$BL" look --compare --size 400); check "compare ohne Änderung: 0 %" grep -q "iso 0.0 %" <<<"$o"
 check "compare ohne Änderung: Warnung" grep -q "kaum sichtbare Änderung" <<<"$o"
 "$BL" run -e 'obj("Kiste").scale.x = 1.6' >/dev/null
-o=$("$BL" look --compare --view iso --view top --size 400); check "compare nach Änderung: Bild 400 breit" grep -q "400×" <<<"$o"
+o=$("$BL" look --compare --view iso --view top --size 400); check "compare nach Änderung: Bild 2×200+4 breit" grep -q "404×" <<<"$o"
 check "compare nach Änderung: >1 %, keine Warnung" bash -c "grep -qE 'iso [1-9][0-9]*\.[0-9] %' <<<\"$o\" && ! grep -q 'kaum sichtbar' <<<\"$o\""
 o=$("$BL" run -e 'result={"objs": sorted(o.name for o in bpy.data.objects), "meshes": len(bpy.data.meshes)}'); check "compare räumt auf" grep -q '"objs": \["Kiste"\], "meshes": 1' <<<"$o"
 o=$("$BL" look --mode wire --compare --size 400); check "compare wire" grep -q "Vergleich mit" <<<"$o"

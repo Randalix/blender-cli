@@ -142,18 +142,32 @@ def blender_exe():
     return str(BLENDER_DIR / "blender")
 
 
-def _autosave_hint(sd):
-    """Leerlauf-Sicherung des letzten Workers einmal melden und mit Zeitstempel beiseitelegen."""
+def _autosave_hint(sd, implicit):
+    """Leerlauf-Sicherung des letzten Workers: beim stillen Start (bl run/save/…) abbrechen, damit nicht auf dem
+    alten Stand weitergearbeitet wird; bei bl open melden und mit Zeitstempel beiseitelegen."""
     f = sd / "autosave.blend"
-    if f.is_file():
-        dst = sd / "autosave_{}.blend".format(time.strftime("%Y%m%d-%H%M%S", time.localtime(f.stat().st_mtime)))
-        f.rename(dst)
-        out("⚠ Der letzte Worker endete im Leerlauf mit ungespeicherten Änderungen; gesichert: {}  (`bl open {}`)".format(dst, dst))
+    if not f.is_file():
+        return
+    if implicit:
+        raise Fail("✗ Der letzte Worker endete im Leerlauf mit ungespeicherten Änderungen, gesichert in {}.\n"
+                   "  Weiter damit: `bl open {}` · alten Stand laden und Sicherung beiseitelegen: `bl open`".format(f, f))
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(f.stat().st_mtime))
+    dst, i = sd / "autosave_{}.blend".format(stamp), 1
+    while dst.exists():
+        i += 1
+        dst = sd / "autosave_{}_{}.blend".format(stamp, i)
+    f.rename(dst)
+    out("⚠ Der letzte Worker endete im Leerlauf mit ungespeicherten Änderungen; gesichert: {}  (`bl open {}`)".format(dst, dst))
 
 
-def start_worker(blend=None, quiet=False):
+def start_worker(blend=None, quiet=False, implicit=False):
     sd = core.state_dir()
-    _autosave_hint(sd)
+    if blend is not None and Path(blend).resolve() == (sd / "autosave.blend").resolve():
+        # bl open <autosave>: erst beiseitelegen, dann die beiseitegelegte Datei öffnen
+        _autosave_hint(sd, False)
+        blend = sorted(sd.glob("autosave_*.blend"), key=lambda p: p.stat().st_mtime)[-1]
+    else:
+        _autosave_hint(sd, implicit)
     port = _free_port()
     log = sd / "worker.log"
     cmd = [blender_exe(), "-b"] + ([str(blend)] if blend else []) + [
@@ -190,7 +204,7 @@ def ensure_worker():
         return w
     pdir, vdir = active(need=False)
     blend = core.newest_blend(pdir, vdir) if pdir else None
-    w = start_worker(blend, quiet=True)
+    w = start_worker(blend, quiet=True, implicit=True)
     out("(Worker gestartet: pid {} Szene {})".format(w["pid"], rel(blend) if blend else "leer"))
     return w
 
@@ -281,11 +295,17 @@ def cmd_close(a):
         send(w["port"], "import bllib\nbllib._request_quit()\nresult = {}", 10)
     except Fail:
         pass
-    for _ in range(50):
-        if not _alive(w["pid"]):
+    pending = core.state_dir() / "autosave.blend.pending"
+    t_end = time.time() + 5
+    while _alive(w["pid"]):
+        if pending.exists():  # Worker sichert gerade im Leerlauf: nicht abschießen
+            t_end = max(t_end, time.time() + 1)
+            if time.time() - pending.stat().st_mtime > 600:
+                break
+        elif time.time() > t_end:
             break
         time.sleep(0.1)
-    else:
+    if _alive(w["pid"]):
         os.kill(w["pid"], signal.SIGTERM)
     (core.state_dir() / "worker.json").unlink(missing_ok=True)
     out("✓ Worker beendet (pid {})".format(w["pid"]))
@@ -314,16 +334,18 @@ def cmd_run(a):
             jobs.append((f.read_text(encoding="utf-8"), a.name if (a.name and len(a.scripts) == 1) else f.stem))
     reported = []
     for i, (src, stem) in enumerate(jobs):
-        j, neu, runs = core.journal_file(sk, stem, src, args)
+        j, neu = core.journal_file(sk, stem, src, args)
         t0 = time.time()
         try:
             r = call("import json\nresult = bllib.run_file({!r}, json.loads({!r}))".format(str(j), json.dumps(args)),
                      timeout=a.timeout, prefer_file=str(j))
         except Fail as ex:
+            core.journal_count(j, ok=False)
             if len(jobs) > 1:
                 ex.args = (str(ex) + "\n  Kette abgebrochen bei Skript {}/{}; nicht ausgeführt: {}".format(
                     i + 1, len(jobs), ", ".join(st for _s, st in jobs[i + 1:]) or "-"),)
             raise
+        runs = core.journal_count(j, ok=True)
         out("✓ {}{} ({:.2f} s)".format(rel(j), "" if neu else " (unverändert, Lauf {})".format(runs), time.time() - t0))
         if r.get("_stdout"):
             out(*core.clip_lines(("  | " + ln for ln in r["_stdout"].rstrip().splitlines()), a.lines))

@@ -46,9 +46,14 @@ try:
 finally:
     srv.stop()
 if reason.startswith("idle") and args.autosave and bllib.changed():
+    pending = args.autosave + ".pending"  # bl close wartet, solange diese Datei existiert (kein SIGTERM mitten im Sichern)
     try:  # ungespeicherte Arbeit nicht still verwerfen; bl meldet die Datei beim nächsten Start
+        open(pending, "w").close()
         bpy.ops.wm.save_as_mainfile(filepath=args.autosave, copy=True, check_existing=False)
         print("BL_AUTOSAVE {}".format(args.autosave), flush=True)
     except Exception as ex:  # noqa: BLE001
         print("BL_AUTOSAVE fehlgeschlagen: {}".format(ex), flush=True)
+    finally:
+        if os.path.exists(pending):
+            os.remove(pending)
 print("BL_EXIT ({})".format(reason), flush=True)

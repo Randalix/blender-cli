@@ -781,13 +781,19 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
 # --------------------------------------------------------------------------- qa
 
 def _qa_module(qa_dir):
-    """qa_check aus EL4CTEO blender-asset-qa (MIT) laden; das Verzeichnis kommt hinten in sys.path (für _bpyx)."""
-    import importlib
-    if not os.path.isfile(os.path.join(qa_dir, "qa_check.py")):
+    """qa_check aus EL4CTEO blender-asset-qa (MIT) genau aus qa_dir laden (nicht irgendein qa_check im sys.path)."""
+    import importlib.util
+    path = os.path.realpath(os.path.join(qa_dir, "qa_check.py"))
+    if not os.path.isfile(path):
         raise RuntimeError("qa_check.py fehlt unter {}".format(qa_dir))
-    if qa_dir not in sys.path:
-        sys.path.append(qa_dir)
-    return importlib.import_module("qa_check")
+    mod = sys.modules.get("qa_check")
+    if mod is not None and os.path.realpath(getattr(mod, "__file__", "") or "") == path:
+        return mod
+    spec = importlib.util.spec_from_file_location("qa_check", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["qa_check"] = mod  # qa_check setzt beim Import sein Verzeichnis selbst vorn in sys.path (für _bpyx)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # eigene Prüfungen → Schlüssel im qa_check-Profil (e = Fehler, w = Warnung, None = aus)
@@ -823,11 +829,14 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None)
     act = vl.objects.active
     mode = act.mode if act is not None else "OBJECT"
     errors, warnings, per, total, gz = [], [], {}, 0, []
+    ground_msg = "asset lowest point"
     try:
+        einzeln = not names and len(groups) > 1
         for g in groups:
             r = qc.run(objects=[o.name for o in g], **kw)
             errors += r.get("errors", [])
-            warnings += r.get("warnings", [])
+            # Einzelprüfung: Bodenhöhe kommt einmal aus dem gemeinsamen Lauf (sonst je Objekt, z. B. Tasse auf dem Tisch)
+            warnings += [w for w in r.get("warnings", []) if not (einzeln and w.startswith(ground_msg))]
             if r.get("ground_z") is not None:
                 gz.append(r["ground_z"])
             for o in g:
@@ -842,6 +851,10 @@ def qa(names=None, profile="game", budget=None, eps=None, tol=None, qa_dir=None)
                         msg = "{}: kaputte Flächen {} {}".format(o.name, k, st[k])
                         level = sev.get(prof_key)
                         (errors if level == "e" else warnings if level == "w" else []).append(msg)
+        if einzeln:  # Paarbefunde zwischen Objekten (z-fighting, verdeckte Rückseiten) sieht nur ein gemeinsamer Lauf
+            r = qc.run(objects=[o.name for g in groups for o in g], **kw)
+            errors += [e for e in r.get("errors", []) if "<->" in e]
+            warnings += [w for w in r.get("warnings", []) if "<->" in w or w.startswith(ground_msg)]
     finally:  # qa_check schaltet in den Object-Modus: Modus und aktives Objekt zurück
         if act is not None and act.name in vl.objects:
             vl.objects.active = act

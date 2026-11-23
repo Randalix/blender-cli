@@ -62,26 +62,30 @@ class CoreTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             lauf = lambda n: json.loads((p / n).read_text())  # noqa: E731
-            j1, n1, r1 = core.journal_file(p, "Körper", "a = 1")
-            self.assertEqual((j1.name, n1, r1), ("001_koerper.py", True, 1))
+            j1, n1 = core.journal_file(p, "Körper", "a = 1")
+            self.assertEqual((j1.name, n1), ("001_koerper.py", True))
             self.assertEqual(j1.read_text(), "a = 1\n")
-            j2, n2, r2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt, letzte Datei → Zähler
-            self.assertEqual((j2, n2, r2), (j1, False, 2))
-            self.assertEqual(lauf("001_koerper.lauf.json"), {"args": {}, "runs": 2})
-            j3, n3, _ = core.journal_file(p, "henkel", "b = 2")
+            self.assertEqual(lauf("001_koerper.lauf.json"), {"args": {}, "runs": 0, "failed": 0})
+            self.assertEqual(core.journal_count(j1, ok=False), 0)  # fehlgeschlagen zählt nicht als Lauf
+            j2, n2 = core.journal_file(p, "Körper", "a = 1\n")  # gleicher Inhalt, letzte Datei → wiederverwendet
+            self.assertEqual((j2, n2), (j1, False))
+            self.assertEqual(core.journal_count(j2), 1)
+            self.assertEqual(core.journal_count(j2), 2)
+            self.assertEqual(lauf("001_koerper.lauf.json"), {"args": {}, "runs": 2, "failed": 1})
+            j3, n3 = core.journal_file(p, "henkel", "b = 2")
             self.assertEqual((j3.name, n3), ("002_henkel.py", True))
-            j4, n4, _ = core.journal_file(p, "Körper", "a = 1")  # koerper → henkel → koerper: eigener Eintrag
+            j4, n4 = core.journal_file(p, "Körper", "a = 1")  # koerper → henkel → koerper: eigener Eintrag
             self.assertEqual((j4.name, n4), ("003_koerper.py", True))
-            j5, n5, _ = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # andere Werte → neue Datei
+            j5, n5 = core.journal_file(p, "Körper", "a = 1", {"n": 3})  # andere Werte → neue Datei
             self.assertEqual((j5.name, n5), ("004_koerper.py", True))
-            self.assertEqual(lauf("004_koerper.lauf.json"), {"args": {"n": 3}, "runs": 1})
-            j6, n6, r6 = core.journal_file(p, "Körper", "a = 1", {"n": 3})
-            self.assertEqual((j6.name, n6, r6), ("004_koerper.py", False, 2))
-            j7, n7, _ = core.journal_file(p, "Körper", "a = 1", {"n": True})  # true ≠ 1
+            self.assertEqual(lauf("004_koerper.lauf.json")["args"], {"n": 3})
+            self.assertEqual(core.journal_file(p, "Körper", "a = 1", {"n": 3}), (j5, False))
+            j7, n7 = core.journal_file(p, "Körper", "a = 1", {"n": True})  # true ≠ 1
             self.assertEqual((j7.name, n7), ("005_koerper.py", True))
-            j8, n8, _ = core.journal_file(p, "Körper", "a = 1")  # ohne Werte ≠ {"n": true}
+            (p / "005_koerper.lauf.json").write_text("{kaputt")  # kaputte Zähldatei → neue Datei statt Traceback
+            j8, n8 = core.journal_file(p, "Körper", "a = 1", {"n": True})
             self.assertEqual((j8.name, n8), ("006_koerper.py", True))
-            self.assertFalse((p / "006_koerper.lauf.json").exists())
+            self.assertEqual(core.journal_count(j7), 1)
 
     def test_parse_set(self):
         self.assertEqual(core.parse_set(["n=3", "f=0.5", "l=[1,2]", "s=abc", "t=true", "leer="]),

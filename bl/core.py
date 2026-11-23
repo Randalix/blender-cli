@@ -85,33 +85,46 @@ def next_numbered(d: Path, stem: str, ext: str) -> Path:
     return d / "{:03d}_{}{}".format(n + 1, clean_label(stem), ext)
 
 
+def _lauf_meta(j: Path):
+    """NNN_<stem>.lauf.json lesen: {"args", "runs" (erfolgreich), "failed"}; fehlt/kaputt → None."""
+    try:
+        m = json.loads(j.with_name(j.stem + ".lauf.json").read_text(encoding="utf-8"))
+        return m if isinstance(m, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
 def journal_file(d: Path, stem: str, src: str, args: dict = None):
-    """Skript ins Journal d schreiben; --set-Werte und Laufzahl in NNN_<stem>.lauf.json daneben.
-    Ist die global letzte Journal-Datei gleich (Name, Inhalt, Werte), wird sie wiederverwendet und ihr Zähler `runs`
-    erhöht: keine identischen Kopien, und beim Nachspielen fehlt kein Lauf. → (pfad, neu_geschrieben, runs)"""
+    """Skript ins Journal d schreiben, daneben NNN_<stem>.lauf.json mit --set-Werten und Laufzählern.
+    Ist die global letzte Journal-Datei gleich (Name, Inhalt, Werte), wird sie wiederverwendet (keine identischen
+    Kopien); journal_count zählt den Lauf erst nach der Ausführung. → (pfad, neu_geschrieben)"""
     src = src if src.endswith("\n") else src + "\n"
     args = args or {}
     key = json.dumps(args, sort_keys=True)  # 1 und true sind hier verschieden
     st = clean_label(stem)
-    last = None
     if d.is_dir():
         nums = [(int(m.group(1)), f) for f in d.iterdir() for m in [re.match(r"^(\d{3,})_(.*)\.py$", f.name)] if m]
         if nums:
-            n, f = max(nums, key=lambda t: t[0])
-            if f.name == "{:03d}_{}.py".format(n, st):
-                last = f
-    if last is not None and last.read_text(encoding="utf-8") == src:
-        side = last.with_name(last.stem + ".lauf.json")
-        meta = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {"args": {}, "runs": 1}
-        if json.dumps(meta.get("args", {}), sort_keys=True) == key:
-            meta["runs"] = int(meta.get("runs", 1)) + 1
-            side.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-            return last, False, meta["runs"]
+            n, last = max(nums, key=lambda t: t[0])
+            meta = _lauf_meta(last)  # fehlt/kaputt → nicht wiederverwenden
+            if (last.name == "{:03d}_{}.py".format(n, st) and meta is not None
+                    and json.dumps(meta.get("args", {}), sort_keys=True) == key
+                    and last.read_text(encoding="utf-8") == src):
+                return last, False
     j = next_numbered(d, stem, ".py")
     j.write_text(src, encoding="utf-8")
-    if args:
-        j.with_name(j.stem + ".lauf.json").write_text(json.dumps({"args": args, "runs": 1}, ensure_ascii=False), encoding="utf-8")
-    return j, True, 1
+    j.with_name(j.stem + ".lauf.json").write_text(
+        json.dumps({"args": args, "runs": 0, "failed": 0}, ensure_ascii=False), encoding="utf-8")
+    return j, True
+
+
+def journal_count(j: Path, ok: bool = True) -> int:
+    """Lauf nach der Ausführung zählen: runs = erfolgreiche, failed = fehlgeschlagene. → runs"""
+    meta = _lauf_meta(j) or {"args": {}, "runs": 0, "failed": 0}
+    key = "runs" if ok else "failed"
+    meta[key] = int(meta.get(key, 0)) + 1
+    j.with_name(j.stem + ".lauf.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return int(meta.get("runs", 0))
 
 
 def parse_set(items) -> dict:

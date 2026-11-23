@@ -170,7 +170,8 @@ o=$("$BL" qa --obj QLoch --profile print 2>&1); rc=$?; check "B qa: Loch → Exi
 o=$("$BL" qa --obj QUmgedreht --profile print 2>&1); check "B qa: umgedrehte Normalen" has "QUmgedreht: 1 closed parts with normals pointing inward"
 o=$("$BL" qa --obj QSauber --obj QSchwebt --profile render 2>&1); check "B qa: schwebendes Teil" has "floating/detached part in QSchwebt"
 o=$("$BL" qa --obj QSkaliert --profile game 2>&1); check "B qa: Skalierung nicht angewendet" has "FEHLER  QSkaliert: unapplied scale"
-o=$("$BL" qa --obj QSplitter --profile render 2>&1); check "B qa: Splitter (eigene Prüfung)" has "QSplitter: kaputte Flächen splitter 1"
+o=$("$BL" qa --obj QSplitter --profile render 2>&1); rc=$?; check "B qa: Splitter bei render nur Warnung (Exit 0)" bash -c "[ $rc -eq 0 ]"; check "B qa: Splitter-Warnung" has "Warnung QSplitter: kaputte Flächen splitter 1"
+o=$("$BL" qa --obj QSplitter --profile game 2>&1); rc=$?; check "B qa: Splitter bei game Fehler (Exit 1)" bash -c "[ $rc -eq 1 ]"; check "B qa: Splitter-Fehler" has "FEHLER  QSplitter: kaputte Flächen splitter 1"
 o=$("$BL" qa --obj QSauber --profile game --budget 10 2>&1); rc=$?; check "B qa: Polybudget" bash -c "[ $rc -eq 1 ]"; check "B qa: Polybudget Meldung" has "Polybudget überschritten: 12 Tris > 10"
 o=$("$BL" qa --obj Gibtsnicht 2>&1); rc=$?; check "B qa: unbekanntes Objekt → Exit 2" bash -c "[ $rc -eq 2 ]"
 o=$(BL_QA_DIR=/gibtsnicht "$BL" qa 2>&1); rc=$?; check "B qa: qa_check fehlt → Exit 3" bash -c "[ $rc -eq 3 ]"
@@ -188,16 +189,29 @@ for n, x in (("Tisch", 0), ("Stuhl", 3)):
 bpy.ops.mesh.primitive_plane_add(size=50); bpy.context.object.name="Boden"' >/dev/null
 o=$("$BL" qa --profile game 2>&1); rc=$?; check "qa einzeln: Tisch und Stuhl getrennt bestehen" bash -c "[ $rc -eq 0 ]"; check "qa einzeln: Kopfzeile" has "je Objekt einzeln"; check "qa einzeln: kein floating" hasnt "floating"
 o=$("$BL" qa --obj Tisch --obj Stuhl --profile game 2>&1); check "qa als Asset: getrennte Teile → floating" has "floating"
+"$BL" run -e 'bpy.ops.mesh.primitive_plane_add(size=0.4, location=(0,0,1.0)); o=bpy.context.object; o.name="Aufkleber"; o.data.materials.append(bpy.data.materials["Q"])' >/dev/null
+o=$("$BL" qa --profile game 2>&1); rc=$?; check "qa einzeln: z-fighting zwischen Objekten erkannt (Exit 1)" bash -c "[ $rc -eq 1 ]"; check "qa einzeln: z-fighting-Paar" has "z-fighting: (Tisch<->Aufkleber|Aufkleber<->Tisch)"
+"$BL" run -e 'bpy.data.objects.remove(obj("Aufkleber"))' >/dev/null
 # --- Review 2: close schützt ungespeicherte Arbeit, Leerlauf sichert sie
 o=$("$BL" close 2>&1); rc=$?; check "close mit Änderungen → Abbruch" bash -c "[ $rc -eq 2 ]"; check "close: Meldung" has "close --verwerfen"
 "$BL" save >/dev/null
+idle_sd="${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION-idle"
 (
   export BL_SESSION="$BL_SESSION-idle" BL_IDLE=3
-  "$BL" projekt "Test Kiste" >/dev/null; "$BL" open --leer >/dev/null; "$BL" run -e 'bpy.ops.mesh.primitive_cube_add()' >/dev/null
+  "$BL" projekt "Test Kiste" >/dev/null; "$BL" open --leer >/dev/null
   sleep 7
 )
-check "Leerlauf: Sicherung geschrieben" test -s "${XDG_STATE_HOME:-$HOME/.local/state}/bl/$BL_SESSION-idle/autosave.blend"
-o=$(BL_SESSION="$BL_SESSION-idle" "$BL" open --leer 2>&1); check "Leerlauf: Hinweis beim nächsten Start" has "ungespeicherten Änderungen; gesichert: .*autosave_[0-9-]+\.blend"
+check "Leerlauf ohne Änderungen: keine Sicherung" test ! -e "$idle_sd/autosave.blend"
+(
+  export BL_SESSION="$BL_SESSION-idle" BL_IDLE=3
+  "$BL" open --leer >/dev/null; "$BL" run -e 'bpy.ops.mesh.primitive_cube_add()' >/dev/null
+  sleep 7
+)
+check "Leerlauf: Sicherung geschrieben" test -s "$idle_sd/autosave.blend"
+check "Leerlauf: keine pending-Datei übrig" test ! -e "$idle_sd/autosave.blend.pending"
+o=$(BL_SESSION="$BL_SESSION-idle" "$BL" info 2>&1); rc=$?; check "Leerlauf: stiller Start bricht ab (nicht auf altem Stand weiter)" bash -c "[ $rc -eq 2 ]"; check "Leerlauf: Meldung nennt bl open" has "bl open .*autosave.blend"
+o=$(BL_SESSION="$BL_SESSION-idle" "$BL" open "$idle_sd/autosave.blend" 2>&1); check "Leerlauf: bl open <Sicherung> lädt sie" has "gesichert: .*autosave_[0-9-]+\.blend"
+o=$(BL_SESSION="$BL_SESSION-idle" "$BL" info 2>&1); check "Leerlauf: Würfel aus der Sicherung da" has "Cube"
 BL_SESSION="$BL_SESSION-idle" "$BL" close --verwerfen >/dev/null
 o=$("$BL" ls); check "ls zeigt 2 Versionen" bash -c "[ \$(grep -c ' v00' <<<\"$o\") -eq 2 ]"
 o=$(BL_ROOT=relativ "$BL" ls 2>&1); check "relatives BL_ROOT abgelehnt" grep -q "absoluter Pfad" <<<"$o"

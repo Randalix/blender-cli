@@ -43,7 +43,9 @@ def report(*objs):
 
 
 def mesh_stats(o, manifold=True):
-    """Zahlen des ausgewerteten Netzes (nach Modifiern): v/e/f/tris, Maße, offene/nicht-mannigfaltige Kanten."""
+    """Zahlen des ausgewerteten Netzes (nach Modifiern): v/e/f/tris, Maße, offene/nicht-mannigfaltige Kanten.
+    Fehler (kaputte Flächen): splitter (Ecke < 1°), winzig (Fläche ~0), gefaltet (Nachbarflächen > 170° geknickt).
+    ngons ist nur Info: N-Gons sind nicht automatisch ein Problem."""
     dg = bpy.context.evaluated_depsgraph_get()
     oe = o.evaluated_get(dg)
     st = {"dims": [round(x, 4) for x in o.dimensions]}
@@ -58,6 +60,14 @@ def mesh_stats(o, manifold=True):
             bm.from_mesh(me)
             st["nonmanifold"] = sum(1 for e in bm.edges if not e.is_manifold)
             st["loose_v"] = sum(1 for v in bm.verts if not v.link_edges)
+            st["ngons"] = sum(1 for f in bm.faces if len(f.verts) > 4)
+            diag = Vector(o.dimensions).length or 1.0
+            tiny_a = (diag * 1e-5) ** 2
+            st["winzig"] = sum(1 for f in bm.faces if f.calc_area() < tiny_a)
+            st["splitter"] = sum(1 for f in bm.faces if f.calc_area() >= tiny_a and
+                                 min(l.calc_angle() for l in f.loops) < math.radians(1.0))
+            st["gefaltet"] = sum(1 for e in bm.edges if len(e.link_faces) == 2 and
+                                 e.calc_face_angle(0.0) > math.radians(170))
             bm.free()
     finally:
         oe.to_mesh_clear()
@@ -77,6 +87,9 @@ def summary(o):
         parts.append(_fmt_dims(o.dimensions))
         if st.get("nonmanifold"):
             parts.append("offen/nm-Kanten {}".format(st["nonmanifold"]))
+        bad = ["{} {}".format(k, st[k]) for k in ("splitter", "winzig", "gefaltet") if st.get(k)]
+        if bad:
+            parts.append("FEHLER " + ", ".join(bad))
     mats = [s.material.name for s in getattr(o, "material_slots", []) if s.material]
     if mats:
         parts.append("mat " + ",".join(mats[:4]) + ("…" if len(mats) > 4 else ""))
@@ -163,7 +176,10 @@ def _info_obj(o):
         L.append("parent {}".format(o.parent.name))
     if o.type in GEOM_TYPES:
         st = mesh_stats(o)
-        L.append("ausgewertet: " + "  ".join("{} {}".format(k, v) for k, v in st.items() if k != "dims"))
+        L.append("ausgewertet: " + "  ".join(("{} {} (Info)" if k == "ngons" else "{} {}").format(k.replace("ngons", "N-Gons"), v) for k, v in st.items() if k != "dims" and not (k in ("splitter", "winzig", "gefaltet") and not v)))
+        bad = ["{} {}".format(k, st[k]) for k in ("splitter", "winzig", "gefaltet") if st.get(k)]
+        if bad:
+            L.append("FEHLER kaputte Flächen: " + ", ".join(bad) + " (Wireframe/Shading können hier Artefakte zeigen)")
     for m in o.modifiers:
         L.append("mod " + _mod_desc(m))
     for s in getattr(o, "material_slots", []):
@@ -261,13 +277,17 @@ def _append_ref(path, names, tmpdir):
     return ref, new
 
 
-def _render_views(out, objs, frame, views, mode, panel, tag):
+def _render_views(out, objs, frame, views, mode, panel, tag, focus=None):
     """Workbench-Renders der Objekte objs (alles andere ausgeblendet), Kamera gerahmt auf frame. → [(view, RGBA, mm/px)]"""
     from PIL import Image
     scene = bpy.context.scene
     mn, mx = bbox_world(frame)
     center = (mn + mx) / 2
     radius = max((mx - mn).length / 2, 1e-4)
+    if focus:  # Ausschnitt: Kamera außerhalb der ganzen Szene, Bildausschnitt nur um den Punkt
+        fc, fr = focus
+        radius = radius + (fc - center).length
+        center = fc
     r, sh = scene.render, scene.display.shading
     saved = {"engine": r.engine, "rx": r.resolution_x, "ry": r.resolution_y, "pct": r.resolution_percentage,
              "film": r.film_transparent, "fp": r.filepath, "cam": scene.camera, "fmt": r.image_settings.file_format,
@@ -303,7 +323,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag):
                 mod = w.modifiers.new("_bl_wire", "WIREFRAME")
                 mod.thickness = radius * 0.004
                 mod.use_replace = True
-                mod.use_even_offset = True
+                mod.use_even_offset = False  # True schießt an Splitterflächen meterlange Strahlen (23.11. nachgestellt)
                 w.color = (0.08, 0.08, 0.1, 1)
                 temps.append(w)
         cam_data.type = "ORTHO"
@@ -327,7 +347,7 @@ def _render_views(out, objs, frame, views, mode, panel, tag):
                 for c in oe.bound_box:
                     p = inv @ (oe.matrix_world @ Vector(c))
                     ext = max(ext, abs(p.x), abs(p.y))
-            cam_data.ortho_scale = max(ext * 2 * 1.1, 1e-4)
+            cam_data.ortho_scale = max((focus[1] if focus else ext) * 2 * 1.1, 1e-4)
             cam_data.clip_start = max(radius * 0.01, 1e-5)
             cam_data.clip_end = dist + radius * 4
             p = "{}.{}.{}.tmp.png".format(out, v, tag)
@@ -407,12 +427,33 @@ def _tile(im, label, font, bg):
     return base.convert("RGB")
 
 
-def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, compare=None, bg=(242, 242, 242)):
+def _parse_focus(focus, radius_mm):
+    """focus: Objektname oder 'x,y,z' (Szeneneinheiten). radius_mm: Radius des Ausschnitts in mm."""
+    su = bpy.context.scene.unit_settings.scale_length or 1.0
+    r = radius_mm / 1000.0 / su if radius_mm else None
+    if focus in bpy.data.objects:
+        mn, mx = bbox_world([bpy.data.objects[focus]])
+        return (mn + mx) / 2, r or max((mx - mn).length / 2, 1e-4)
+    try:
+        c = Vector([float(x) for x in focus.split(",")])
+        assert len(c) == 3
+    except (ValueError, AssertionError):
+        raise ValueError("--focus braucht einen Objektnamen oder x,y,z, nicht {!r}".format(focus))
+    if r is None:
+        raise ValueError("--focus x,y,z braucht --radius (mm)")
+    return c, r
+
+
+def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, compare=None, bg=(242, 242, 242),
+         focus=None, radius_mm=None):
     """Rendert Ansichten in eine PNG mit Textstreifen. mode: solid|wire (Workbench, ortho, gerahmt) oder cam.
     compare=<.blend>: derselbe Blick auf den gespeicherten Stand links ("vorher"), aktuelle Szene rechts ("jetzt"),
     gleiche Kamera für beide; Änderung in % mit rotem Rahmen."""
     from PIL import Image, ImageDraw
     scene = bpy.context.scene
+    if focus and mode == "cam":
+        raise ValueError("--focus geht nur mit solid/wire, nicht mit --mode cam")
+    fcs = _parse_focus(focus, radius_mm) if focus else None
     ref, new_ids = [], []
     try:
         if compare:
@@ -436,12 +477,16 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             old = [("cam", _render_cam(out, panel, ref, "vorher"), None)] if compare else []
         else:
             frame = objs + ref
-            cur = _render_views(out, objs, frame, views, mode, panel, "jetzt")
-            old = _render_views(out, ref, frame, views, mode, panel, "vorher") if compare else []
+            cur = _render_views(out, objs, frame, views, mode, panel, "jetzt", fcs)
+            old = _render_views(out, ref, frame, views, mode, panel, "vorher", fcs) if compare else []
         faces = sum(mesh_stats(o, manifold=False).get("f", 0) for o in objs if o.type == "MESH")
         names_txt = ", ".join(o.name for o in objs[:8]) + (" …" if len(objs) > 8 else "")
         if ground:
             names_txt += "  (ohne Boden: {})".format(", ".join(o.name for o in ground))
+        if fcs:
+            su = scene.unit_settings.scale_length or 1.0
+            names_txt += "  · Ausschnitt um ({}) r {:.3g} mm".format(
+                ", ".join("{:.4g}".format(x) for x in fcs[0]), fcs[1] * su * 1000)
     finally:
         if new_ids:
             bpy.data.batch_remove(new_ids)

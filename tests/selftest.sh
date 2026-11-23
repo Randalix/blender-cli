@@ -56,8 +56,31 @@ o=$("$BL" look --compare --view iso --view top --size 400); check "compare nach 
 check "compare nach Änderung: >1 %, keine Warnung" bash -c "grep -qE 'iso [1-9][0-9]*\.[0-9] %' <<<\"$o\" && ! grep -q 'kaum sichtbar' <<<\"$o\""
 o=$("$BL" run -e 'result={"objs": sorted(o.name for o in bpy.data.objects), "meshes": len(bpy.data.meshes)}'); check "compare räumt auf" grep -q '"objs": \["Kiste"\], "meshes": 1' <<<"$o"
 o=$("$BL" look --mode wire --compare --size 400); check "compare wire" grep -q "Vergleich mit" <<<"$o"
-"$BL" save >/dev/null; o=$("$BL" look --compare --size 400); check "compare nach save: gegen gespeicherten Stand 0 %" grep -q "iso 0.0 %" <<<"$o"
-o=$("$BL" look --compare "$BL_ROOT/test-kiste/v002_zweiter-stand/blend/test-kiste_start.blend" --size 400); check "compare gegen Startstand: Änderung bleibt sichtbar" bash -c "! grep -q 'kaum sichtbar' <<<\"$o\""
+"$BL" save >/dev/null; o=$("$BL" look --compare --size 400); check "compare nach save nutzt Startstand" bash -c "grep -q 'test-kiste_start.blend' <<<\"$o\" && ! grep -q 'kaum sichtbar' <<<\"$o\""
+o=$("$BL" look --compare "$BL_ROOT/test-kiste/v002_zweiter-stand/blend/test-kiste.blend" --size 400); check "compare gegen gespeicherten Stand: 0 %" grep -q "iso 0.0 %" <<<"$o"
+o=$("$BL" look --focus Kiste --radius 100 --size 400); check "focus: feinerer Maßstab" bash -c "grep -qE '1 px = 0\.[0-9]+ mm' <<<\"$o\""
+o=$("$BL" look --focus 0,0,2 --size 400 2>&1); rc=$?; check "focus Punkt ohne radius → Fehler" bash -c "[ $rc -eq 2 ] && grep -q 'braucht --radius' <<<\"$o\""
+o=$("$BL" look --focus 0.5,0.5,2.5 --radius 200 --compare --size 400); check "focus + compare" grep -q "Vergleich mit" <<<"$o"
+o=$("$BL" run -e 'import bmesh
+me=bpy.data.meshes.new("S"); bm=bmesh.new()
+v=[bm.verts.new(p) for p in [(0,0,0),(1,0,0),(1,1,0),(0,1,0),(0.5,-0.00001,0),(0.5,1.5,0)]]
+bm.faces.new((v[0],v[3],v[2],v[1])); bm.faces.new((v[0],v[1],v[4])); bm.to_mesh(me)
+s=bpy.data.objects.new("Splitter",me); bpy.context.scene.collection.objects.link(s); s.location=(5,0,0)
+me2=bpy.data.meshes.new("N"); bm2=bmesh.new(); import math
+vs=[bm2.verts.new((math.cos(i/6*math.tau), math.sin(i/6*math.tau), 0)) for i in range(6)]; bm2.faces.new(vs); bm2.to_mesh(me2)
+n=bpy.data.objects.new("Sechseck",me2); bpy.context.scene.collection.objects.link(n); n.location=(8,0,0)
+report(s, n); result={"s": mesh_stats(s), "n": mesh_stats(n)}' --report)
+check "mesh_stats: Splitter erkannt" grep -q '"splitter": 1' <<<"$o"
+check "summary: FEHLER bei Splitter" grep -q "Splitter  MESH .*FEHLER splitter 1" <<<"$o"
+check "N-Gon ist kein Fehler" bash -c "grep -q 'Sechseck  MESH' <<<\"$o\" && ! grep -q 'Sechseck.*FEHLER' <<<\"$o\""
+o=$("$BL" info --obj Sechseck); check "info: N-Gons als Info" grep -q "N-Gons 1 (Info)" <<<"$o"
+o=$("$BL" look --mode wire --obj Splitter --size 300); img=$(grep -o '/[^ ]*\.png' <<<"$o")
+o=$("$BL" run -e 'from PIL import Image
+im=Image.open(r"'"$img"'").convert("L"); w,h=im.width,im.height-40
+rand=[im.getpixel((x,y)) for x in range(w) for y in range(h) if (x<10 or x>w-10 or y<10 or y>h-10) and not (x<120 and y<30)]
+result={"dunkel_am_rand": sum(1 for p in rand if p<120)}')
+check "wire: keine Strahlen am Splitter" grep -q '"dunkel_am_rand": 0' <<<"$o"
+"$BL" run -e 'bpy.data.objects.remove(obj("Splitter")); bpy.data.objects.remove(obj("Sechseck"))' >/dev/null
 "$BL" run -e 'bpy.ops.mesh.primitive_plane_add(size=50); bpy.context.object.name="Boden"' >/dev/null
 o=$("$BL" look --size 400); check "Boden aus Rahmung genommen" grep -q "Boden nicht gerahmt" <<<"$o"
 check "Maßstab bleibt fein (< 10 mm/px)" bash -c "grep -qE '1 px = [0-9]\.[0-9]+ mm' <<<\"$o\""

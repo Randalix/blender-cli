@@ -299,8 +299,9 @@ def cmd_info(a):
 
 def compare_ref(arg, pdir, vdir):
     """Vergleichsstand: 'auto' = zuletzt gespeicherte .blend (aktive Version, sonst ältere), sonst Pfad."""
-    if arg == "auto":
-        ref = core.newest_blend(pdir, vdir)
+    if arg == "auto":  # Startstand der Version (von `bl version`); `bl save` überschreibt ihn nicht
+        start = vdir / "blend" / (pdir.name + "_start.blend")
+        ref = start if start.is_file() else core.newest_blend(pdir, vdir)
         if ref is None:
             raise Fail("kein gespeicherter Stand zum Vergleichen: vor der Änderung `bl version \"<label>\"` oder `bl save`")
         return ref
@@ -310,18 +311,20 @@ def compare_ref(arg, pdir, vdir):
     return ref
 
 
-def do_look(names, views, mode, size, sheet, label="look", compare=None):
+def do_look(names, views, mode, size, sheet, label="look", compare=None, focus=None, radius=None):
     pdir, vdir = active()
     vor = vdir / "vorschau"
     vor.mkdir(parents=True, exist_ok=True)
     stem = label if label != "look" else "_".join(["sheet"] if sheet else views) + ("_" + mode if mode != "solid" else "")
     ref = compare_ref(compare, pdir, vdir) if compare else None
+    if focus and label == "look":
+        stem += "_ausschnitt"
     if ref:
         stem += "_vergleich" if label == "look" else ""
     path = core.next_numbered(vor, stem, ".png")
     panel = size // 2 if (sheet or ref) else size
-    r = call("result = bllib.look({!r}, views={!r}, names={!r}, mode={!r}, panel={}, sheet={}, compare={!r})".format(
-        str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None))
+    r = call("result = bllib.look({!r}, views={!r}, names={!r}, mode={!r}, panel={}, sheet={}, compare={!r}, focus={!r}, radius_mm={!r})".format(
+        str(path), list(views), names, mode, panel, sheet, str(ref) if ref else None, focus, radius))
     out("✓ Bild {}  {}×{} px (≈{} Token)  1 px = {} mm".format(
         r["path"], r["w"], r["h"], core.image_tokens(r["w"], r["h"]), "/".join(str(x) for x in r.get("mm_per_px", [])) or "-"))
     if r.get("ground"):
@@ -341,7 +344,8 @@ def cmd_look(a):
     else:
         views = a.view or ["iso"]
     names = a.obj or None
-    do_look(names, views, a.mode, a.size, a.sheet or len(views) > 1, label=a.out or "look", compare=a.compare)
+    do_look(names, views, a.mode, a.size, a.sheet or len(views) > 1, label=a.out or "look", compare=a.compare,
+            focus=a.focus, radius=a.radius)
 
 
 def cmd_save(a):
@@ -453,7 +457,9 @@ def build_parser():
     p.add_argument("--size", type=int, default=768, help="Bildbreite in px")
     p.add_argument("--out", help="Name im Bild-Protokoll")
     p.add_argument("--compare", nargs="?", const="auto", metavar="BLEND",
-                   help="vorher/jetzt nebeneinander mit gleicher Kamera; ohne Wert: zuletzt gespeicherter Stand")
+                   help="vorher/jetzt nebeneinander mit gleicher Kamera; ohne Wert: Startstand der Version")
+    p.add_argument("--focus", metavar="OBJ|x,y,z", help="Ausschnitt um ein Objekt oder einen Punkt (Szeneneinheiten)")
+    p.add_argument("--radius", type=float, metavar="MM", help="Radius des Ausschnitts in mm")
     p.set_defaults(fn=cmd_look)
     p = sp.add_parser("save", help="Szene in blend/ der aktiven Version speichern")
     p.add_argument("--as", help="Dateiname (ohne .blend)")

@@ -273,7 +273,12 @@ def look(out, views=("iso",), names=None, mode="solid", panel=768, sheet=False, 
             d = Vector(VIEW_DIRS[v]).normalized()
             dist = radius * 4
             cam.location = center + d * dist
-            cam.rotation_euler = (-d).to_track_quat("-Z", "Y").to_euler()
+            if v == "top":  # senkrecht: to_track_quat ist dort mehrdeutig (Bild war um 180° gedreht)
+                cam.rotation_euler = (0.0, 0.0, 0.0)  # Blick -Z, oben = +Y, rechts = +X
+            elif v == "bottom":
+                cam.rotation_euler = (math.pi, 0.0, 0.0)  # Blick +Z, oben = -Y, rechts = +X
+            else:
+                cam.rotation_euler = (-d).to_track_quat("-Z", "Y").to_euler()
             bpy.context.view_layer.update()
             inv = cam.matrix_world.inverted()
             ext = 0.0

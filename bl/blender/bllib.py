@@ -34,8 +34,8 @@ def _request_quit():
 
 
 def changed():
-    """Unsaved work? Script runs since the last save; with a window also edits by hand (bpy.data.is_dirty;
-    bl look leaves it set too, so after looking `bl open` asks for --discard: safer for edits by hand)."""
+    """Unsaved work? Script runs since the last save; with a window also edits by hand (bpy.data.is_dirty, set by
+    a real key press in the window; operators from bl run do not set it, measured 23.11.)."""
     return _changed or (_gui and bpy.data.is_dirty)
 
 

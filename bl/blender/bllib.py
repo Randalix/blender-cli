@@ -261,7 +261,7 @@ def _append_ref(path, names, tmpdir):
     try:
         with bpy.data.libraries.load(tmp, link=False) as (src, dst):
             srcnames = list(src.objects)
-            dst.objects = srcnames
+            dst.objects = list(srcnames)  # eigene Liste: Blender ersetzt deren Einträge beim Laden durch Objekte
     finally:
         os.remove(tmp)
     scene = bpy.context.scene
